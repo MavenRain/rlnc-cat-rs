@@ -1,0 +1,22 @@
+[package]
+name = "rlnc-cat-rs"
+version = "0.1.0"
+edition = "2024"
+description = "Random Linear Network Coding over GF(2^8), built on comp-cat-rs"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/MavenRain/rlnc-cat-rs"
+readme = "README.md"
+keywords = ["rlnc", "network-coding", "erasure-code", "galois-field", "category-theory"]
+categories = ["mathematics", "network-programming"]
+
+[dependencies]
+comp-cat-rs = "0.5"
+
+[dev-dependencies]
+proptest = "1"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = "warn"
+needless_pass_by_value = "warn"
+manual_map = "warn"
