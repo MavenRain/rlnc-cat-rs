@@ -165,7 +165,9 @@ impl GfMatrix {
 
     /// Add `scalar * row[source]` to `row[target]`, returning a new matrix.
     ///
-    /// Computes: `new_row[target] = row[target] + scalar * row[source]`.
+    /// Computes: `new_row[target] = row[target] + scalar * row[source]`
+    /// as a single fused multiply-accumulate (one allocation for the
+    /// new row instead of two).
     ///
     /// Returns `None` if either index is out of bounds.
     #[must_use]
@@ -178,20 +180,22 @@ impl GfMatrix {
         if target >= self.rows.len() || source >= self.rows.len() {
             None
         } else {
-            let scaled_source = self.rows[source].scale(scalar);
-            // add can only fail on dimension mismatch, which cannot
-            // happen here since all rows have the same length
-            self.rows[target].add(&scaled_source).ok().map(|new_target| Self {
-                rows: self
-                    .rows
-                    .iter()
-                    .enumerate()
-                    .map(|(i, row)| {
-                        if i == target { new_target.clone() } else { row.clone() }
-                    })
-                    .collect(),
-                col_count: self.col_count,
-            })
+            // mac can only fail on dimension mismatch, which cannot
+            // happen here since all rows have the same length.
+            self.rows[target]
+                .mac(&self.rows[source], scalar)
+                .ok()
+                .map(|new_target| Self {
+                    rows: self
+                        .rows
+                        .iter()
+                        .enumerate()
+                        .map(|(i, row)| {
+                            if i == target { new_target.clone() } else { row.clone() }
+                        })
+                        .collect(),
+                    col_count: self.col_count,
+                })
         }
     }
 

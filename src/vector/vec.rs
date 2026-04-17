@@ -143,7 +143,9 @@ impl GfVec {
     /// Compute the linear combination `sum(coeffs[i] * vecs[i])`.
     ///
     /// All vectors must have the same length.  The number of coefficients
-    /// must equal the number of vectors.
+    /// must equal the number of vectors.  Each term folds through the
+    /// fused [`mac`](Self::mac) primitive, so the traversal does one
+    /// allocation per input vector instead of two.
     ///
     /// # Errors
     ///
@@ -161,8 +163,7 @@ impl GfVec {
                 coeffs
                     .iter()
                     .zip(vecs.iter())
-                    .map(|(&c, v)| v.scale(c))
-                    .try_fold(Self::zeros(dim), |acc, scaled| acc.add(&scaled))
+                    .try_fold(Self::zeros(dim), |acc, (&c, v)| acc.mac(v, c))
             }
         } else {
             Err(Error::DimensionMismatch {
