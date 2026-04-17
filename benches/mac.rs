@@ -1,12 +1,8 @@
-//! Criterion benchmark for the GF(2^8) multiply-accumulate kernel.
-//!
-//! Measures the fused `mac` primitive at several payload sizes against
-//! the legacy `scale` + `add` composition (two passes, two allocations).
+//! Criterion benchmark for the GF(2^8) multiply-accumulate kernel and
+//! the `DecoderState::absorb` path.
 
-// Criterion's BenchmarkGroup API requires &mut self method chains, so the
-// bench functions keep a mut-bound group variable.  The needless_for_each
-// lint is silenced at the module level because the project convention is to
-// use combinators over explicit `for` loops.
+// Combinators over explicit `for` loops.  Criterion's pedantic lint
+// prefers a for loop, but the project convention is iterators.
 #![allow(clippy::needless_for_each)]
 
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
@@ -29,47 +25,43 @@ fn fixture(size: usize) -> (Vec<Gf256>, Vec<Gf256>, Gf256) {
 }
 
 fn bench_field_mac(c: &mut Criterion) {
-    let mut group = c.benchmark_group("field::mac");
     SIZES.iter().for_each(|&size| {
         let (acc, v, scalar) = fixture(size);
-        group.throughput(Throughput::Bytes(size as u64));
-        group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, _| {
-            b.iter(|| std::hint::black_box(mac(&acc, &v, scalar).ok()));
-        });
+        c.benchmark_group("field::mac")
+            .throughput(Throughput::Bytes(size as u64))
+            .bench_with_input(BenchmarkId::from_parameter(size), &size, |b, _| {
+                b.iter(|| std::hint::black_box(mac(&acc, &v, scalar).ok()));
+            });
     });
-    group.finish();
 }
 
 fn bench_gfvec_mac(c: &mut Criterion) {
-    let mut group = c.benchmark_group("GfVec::mac");
     SIZES.iter().for_each(|&size| {
         let (acc, v, scalar) = fixture(size);
         let acc_vec = GfVec::new(acc);
         let v_vec = GfVec::new(v);
-        group.throughput(Throughput::Bytes(size as u64));
-        group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, _| {
-            b.iter(|| std::hint::black_box(acc_vec.mac(&v_vec, scalar).ok()));
-        });
+        c.benchmark_group("GfVec::mac")
+            .throughput(Throughput::Bytes(size as u64))
+            .bench_with_input(BenchmarkId::from_parameter(size), &size, |b, _| {
+                b.iter(|| std::hint::black_box(acc_vec.mac(&v_vec, scalar).ok()));
+            });
     });
-    group.finish();
 }
 
 fn bench_scale_then_add(c: &mut Criterion) {
-    // Baseline: the pre-mac path (scale, then add) with two allocations.
-    let mut group = c.benchmark_group("GfVec::scale+add (baseline)");
     SIZES.iter().for_each(|&size| {
         let (acc, v, scalar) = fixture(size);
         let acc_vec = GfVec::new(acc);
         let v_vec = GfVec::new(v);
-        group.throughput(Throughput::Bytes(size as u64));
-        group.bench_with_input(BenchmarkId::from_parameter(size), &size, |b, _| {
-            b.iter(|| {
-                let scaled = v_vec.scale(scalar);
-                std::hint::black_box(acc_vec.add(&scaled).ok())
+        c.benchmark_group("GfVec::scale+add (baseline)")
+            .throughput(Throughput::Bytes(size as u64))
+            .bench_with_input(BenchmarkId::from_parameter(size), &size, |b, _| {
+                b.iter(|| {
+                    let scaled = v_vec.scale(scalar);
+                    std::hint::black_box(acc_vec.add(&scaled).ok())
+                });
             });
-        });
     });
-    group.finish();
 }
 
 #[allow(clippy::cast_possible_truncation)]
@@ -108,25 +100,24 @@ fn decoder_fixture(k: usize, piece_bytes: usize) -> (OriginalData, Vec<CodedPiec
 }
 
 fn bench_decoder_absorb(c: &mut Criterion) {
-    let mut group = c.benchmark_group("DecoderState::absorb_all+decode");
     let cases = &[(8usize, 64usize), (16, 256), (32, 1024), (64, 2048)];
     cases.iter().for_each(|&(k, piece_bytes)| {
         let (orig, pieces) = decoder_fixture(k, piece_bytes);
         let payload_bytes = k * piece_bytes;
-        group.throughput(Throughput::Bytes(payload_bytes as u64));
         let label = format!("k={k} b={piece_bytes}");
-        group.bench_with_input(BenchmarkId::from_parameter(&label), &label, |b, _| {
-            b.iter(|| {
-                let state = DecoderState::new(orig.piece_count(), orig.piece_byte_len());
-                let result = pieces
-                    .iter()
-                    .try_fold(state, |s, p| s.absorb(p))
-                    .and_then(DecoderState::decode);
-                std::hint::black_box(result.ok())
+        c.benchmark_group("DecoderState::absorb_all+decode")
+            .throughput(Throughput::Bytes(payload_bytes as u64))
+            .bench_with_input(BenchmarkId::from_parameter(&label), &label, |b, _| {
+                b.iter(|| {
+                    let state = DecoderState::new(orig.piece_count(), orig.piece_byte_len());
+                    let result = pieces
+                        .iter()
+                        .try_fold(state, DecoderState::absorb)
+                        .and_then(DecoderState::decode);
+                    std::hint::black_box(result.ok())
+                });
             });
-        });
     });
-    group.finish();
 }
 
 criterion_group!(

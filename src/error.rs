@@ -53,6 +53,10 @@ pub enum Error {
 
     /// The random byte source returned an error.
     RandomGenerationFailed(String),
+
+    /// An authenticator rejected a piece: its tag did not match the
+    /// expected value for the given commitment.
+    AuthenticatorRejected,
 }
 
 impl fmt::Display for Error {
@@ -84,6 +88,9 @@ impl fmt::Display for Error {
             }
             Self::RandomGenerationFailed(msg) => {
                 write!(f, "random generation failed: {msg}")
+            }
+            Self::AuthenticatorRejected => {
+                write!(f, "authenticator rejected the piece")
             }
         }
     }

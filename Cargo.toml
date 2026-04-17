@@ -10,6 +10,7 @@ keywords = ["rlnc", "network-coding", "erasure-code", "galois-field", "category-
 categories = ["mathematics", "network-programming"]
 
 [dependencies]
+blake3 = "1"
 comp-cat-rs = "0.5"
 
 [dev-dependencies]

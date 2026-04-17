@@ -38,6 +38,7 @@
 //! assert!(piece.and_then(|r| r.ok()).is_some());
 //! ```
 
+pub mod auth;
 pub mod coding;
 pub mod error;
 pub mod field;
