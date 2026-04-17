@@ -1,7 +1,12 @@
 //! Immutable matrices over GF(2^8).
 //!
-//! [`GfMatrix`] stores rows of [`GfVec`] in row-major order.
-//! Every operation returns a new matrix; nothing is mutated.
+//! [`GfMatrix`] stores rows as `Arc<GfVec>` internally so that every row
+//! operation (swap, scale, add) only reallocates the row(s) it touches;
+//! the rest of the matrix is reconstructed by refcount bumps.  For
+//! Gaussian elimination this turns the per-op cost from O(rows × cols)
+//! byte copies into O(rows) atomic increments plus one fresh row.
+
+use std::sync::Arc;
 
 use crate::error::Error;
 use crate::field::Gf256;
@@ -10,7 +15,9 @@ use crate::vector::GfVec;
 /// An immutable matrix of GF(2^8) elements in row-major order.
 ///
 /// Used for the augmented decoder matrix in Gaussian elimination.
-/// Each row operation (swap, scale, add) returns a fresh matrix.
+/// Each row operation (swap, scale, add) returns a fresh matrix whose
+/// untouched rows share storage with `self` via [`Arc`], so the
+/// per-op byte-copy cost is bounded by the single row that changes.
 ///
 /// # Examples
 ///
@@ -25,7 +32,7 @@ use crate::vector::GfVec;
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[must_use]
 pub struct GfMatrix {
-    rows: Vec<GfVec>,
+    rows: Vec<Arc<GfVec>>,
     col_count: usize,
 }
 
@@ -47,7 +54,10 @@ impl GfMatrix {
                 actual: r.len(),
             })
         } else {
-            Ok(Self { rows, col_count })
+            Ok(Self {
+                rows: rows.into_iter().map(Arc::new).collect(),
+                col_count,
+            })
         }
     }
 
@@ -74,7 +84,7 @@ impl GfMatrix {
     /// A borrowed reference to the given row.
     #[must_use]
     pub fn row(&self, index: usize) -> Option<&GfVec> {
-        self.rows.get(index)
+        self.rows.get(index).map(Arc::as_ref)
     }
 
     /// The element at (row, col).
@@ -83,23 +93,26 @@ impl GfMatrix {
         self.rows.get(row).and_then(|r| r.get(col))
     }
 
-    /// A borrowed slice of all rows.
-    pub fn rows(&self) -> &[GfVec] {
-        &self.rows
+    /// An iterator over the rows.
+    pub fn rows(&self) -> impl Iterator<Item = &GfVec> {
+        self.rows.iter().map(Arc::as_ref)
     }
 
     /// Append a row to the matrix, returning a new matrix.
+    ///
+    /// Untouched rows are shared via `Arc`; only the new row is freshly
+    /// allocated.
     ///
     /// # Errors
     ///
     /// Returns an error if the new row's length differs from `col_count`.
     pub fn append_row(&self, row: GfVec) -> Result<Self, Error> {
         if row.len() == self.col_count {
-            let new_rows: Vec<GfVec> = self
+            let new_rows: Vec<Arc<GfVec>> = self
                 .rows
                 .iter()
-                .cloned()
-                .chain(core::iter::once(row))
+                .map(Arc::clone)
+                .chain(core::iter::once(Arc::new(row)))
                 .collect();
             Ok(Self {
                 rows: new_rows,
@@ -115,27 +128,29 @@ impl GfMatrix {
 
     /// Swap two rows, returning a new matrix.
     ///
-    /// Returns `None` if either index is out of bounds.
+    /// Returns `None` if either index is out of bounds.  Swaps are
+    /// O(rows) refcount bumps; no row bytes are copied.
     #[must_use]
     pub fn with_rows_swapped(&self, i: usize, j: usize) -> Option<Self> {
         if i >= self.rows.len() || j >= self.rows.len() {
             None
         } else {
+            let new_rows: Vec<Arc<GfVec>> = self
+                .rows
+                .iter()
+                .enumerate()
+                .map(|(idx, row)| {
+                    if idx == i {
+                        Arc::clone(&self.rows[j])
+                    } else if idx == j {
+                        Arc::clone(&self.rows[i])
+                    } else {
+                        Arc::clone(row)
+                    }
+                })
+                .collect();
             Some(Self {
-                rows: self
-                    .rows
-                    .iter()
-                    .enumerate()
-                    .map(|(idx, row)| {
-                        if idx == i {
-                            self.rows[j].clone()
-                        } else if idx == j {
-                            self.rows[i].clone()
-                        } else {
-                            row.clone()
-                        }
-                    })
-                    .collect(),
+                rows: new_rows,
                 col_count: self.col_count,
             })
         }
@@ -143,21 +158,28 @@ impl GfMatrix {
 
     /// Scale a row by a scalar, returning a new matrix.
     ///
-    /// Returns `None` if the index is out of bounds.
+    /// Only the scaled row is freshly allocated; all others share
+    /// storage via `Arc`.  Returns `None` if the index is out of bounds.
     #[must_use]
     pub fn with_row_scaled(&self, index: usize, scalar: Gf256) -> Option<Self> {
         if index >= self.rows.len() {
             None
         } else {
+            let scaled = Arc::new(self.rows[index].scale(scalar));
+            let new_rows: Vec<Arc<GfVec>> = self
+                .rows
+                .iter()
+                .enumerate()
+                .map(|(i, row)| {
+                    if i == index {
+                        Arc::clone(&scaled)
+                    } else {
+                        Arc::clone(row)
+                    }
+                })
+                .collect();
             Some(Self {
-                rows: self
-                    .rows
-                    .iter()
-                    .enumerate()
-                    .map(|(i, row)| {
-                        if i == index { row.scale(scalar) } else { row.clone() }
-                    })
-                    .collect(),
+                rows: new_rows,
                 col_count: self.col_count,
             })
         }
@@ -166,8 +188,9 @@ impl GfMatrix {
     /// Add `scalar * row[source]` to `row[target]`, returning a new matrix.
     ///
     /// Computes: `new_row[target] = row[target] + scalar * row[source]`
-    /// as a single fused multiply-accumulate (one allocation for the
-    /// new row instead of two).
+    /// as a single fused multiply-accumulate.  Only the modified row is
+    /// freshly allocated; all other rows share storage with `self` via
+    /// `Arc`.
     ///
     /// Returns `None` if either index is out of bounds.
     #[must_use]
@@ -185,16 +208,24 @@ impl GfMatrix {
             self.rows[target]
                 .mac(&self.rows[source], scalar)
                 .ok()
-                .map(|new_target| Self {
-                    rows: self
+                .map(|new_target| {
+                    let new_target_arc = Arc::new(new_target);
+                    let new_rows: Vec<Arc<GfVec>> = self
                         .rows
                         .iter()
                         .enumerate()
                         .map(|(i, row)| {
-                            if i == target { new_target.clone() } else { row.clone() }
+                            if i == target {
+                                Arc::clone(&new_target_arc)
+                            } else {
+                                Arc::clone(row)
+                            }
                         })
-                        .collect(),
-                    col_count: self.col_count,
+                        .collect();
+                    Self {
+                        rows: new_rows,
+                        col_count: self.col_count,
+                    }
                 })
         }
     }
@@ -213,13 +244,16 @@ impl GfMatrix {
                 actual: col,
             })
         } else {
-            let (left_rows, right_rows): (Vec<GfVec>, Vec<GfVec>) = self
+            let (left_rows, right_rows): (Vec<Arc<GfVec>>, Vec<Arc<GfVec>>) = self
                 .rows
                 .iter()
                 .map(|row| {
                     let bytes = row.to_bytes();
                     let (l, r) = bytes.split_at(col);
-                    (GfVec::from_bytes(l), GfVec::from_bytes(r))
+                    (
+                        Arc::new(GfVec::from_bytes(l)),
+                        Arc::new(GfVec::from_bytes(r)),
+                    )
                 })
                 .unzip();
             Ok((
@@ -293,5 +327,21 @@ mod tests {
         assert_eq!(right.col_count(), 2);
         assert_eq!(left.get(0, 0), Some(Gf256::new(1)));
         assert_eq!(right.get(0, 0), Some(Gf256::new(3)));
+    }
+
+    #[test]
+    fn row_op_shares_untouched_rows() {
+        let m = GfMatrix::new(vec![
+            GfVec::from_bytes(&[1, 2, 3]),
+            GfVec::from_bytes(&[4, 5, 6]),
+            GfVec::from_bytes(&[7, 8, 9]),
+        ])
+        .unwrap_or(GfMatrix::empty(0));
+        let modified = m.with_row_added(0, 1, Gf256::one()).unwrap_or(m.clone());
+        // Row 2 is unchanged; the Arc handle inside `modified` must point
+        // at the same allocation as the corresponding Arc in `m`.
+        let m_row2 = &m.rows[2];
+        let modified_row2 = &modified.rows[2];
+        assert!(Arc::ptr_eq(m_row2, modified_row2));
     }
 }
