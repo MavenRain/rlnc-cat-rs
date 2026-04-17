@@ -4,6 +4,8 @@
 //! with primitive element 3.
 
 mod element;
+mod mac;
 mod tables;
 
 pub use element::Gf256;
+pub use mac::mac;

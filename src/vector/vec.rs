@@ -111,6 +111,35 @@ impl GfVec {
         }
     }
 
+    /// Fused multiply-accumulate: `self + scalar * other`.
+    ///
+    /// Equivalent to `self.add(&other.scale(scalar))?` but performs a
+    /// single pass with one allocation.  This is the inner kernel of
+    /// every Gaussian elimination row reduction and every RLNC
+    /// coded-piece generation.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::DimensionMismatch`] when `self` and `other` have
+    /// different lengths.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use rlnc_cat_rs::field::Gf256;
+    /// use rlnc_cat_rs::vector::GfVec;
+    ///
+    /// let acc = GfVec::from_bytes(&[0x10, 0x20, 0x30]);
+    /// let v = GfVec::from_bytes(&[0x01, 0x02, 0x03]);
+    /// let scalar = Gf256::new(0x05);
+    ///
+    /// let result = acc.mac(&v, scalar).ok();
+    /// assert_eq!(result.map(|r| r.len()), Some(3));
+    /// ```
+    pub fn mac(&self, other: &Self, scalar: Gf256) -> Result<Self, Error> {
+        crate::field::mac(&self.elements, &other.elements, scalar).map(Self::new)
+    }
+
     /// Compute the linear combination `sum(coeffs[i] * vecs[i])`.
     ///
     /// All vectors must have the same length.  The number of coefficients
@@ -218,5 +247,32 @@ mod tests {
         let result = GfVec::linear_combine(&[], &[]);
         assert!(result.is_ok());
         assert_eq!(result.unwrap_or(GfVec::from_bytes(&[1])), GfVec::zeros(0));
+    }
+
+    #[test]
+    fn mac_matches_scale_then_add() {
+        let acc = GfVec::from_bytes(&[0x10, 0x20, 0x30, 0x40, 0x50, 0x60, 0x70, 0x80]);
+        let v = GfVec::from_bytes(&[0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08]);
+        let scalar = Gf256::new(0x1B);
+
+        let via_mac = acc.mac(&v, scalar).ok();
+        let via_scale_add = acc.add(&v.scale(scalar)).ok();
+
+        assert_eq!(via_mac, via_scale_add);
+    }
+
+    #[test]
+    fn mac_rejects_dimension_mismatch() {
+        let a = GfVec::from_bytes(&[1, 2, 3]);
+        let b = GfVec::from_bytes(&[4, 5]);
+        assert!(a.mac(&b, Gf256::one()).is_err());
+    }
+
+    #[test]
+    fn mac_by_zero_equals_acc() {
+        let acc = GfVec::from_bytes(&[0x11, 0x22, 0x33, 0x44]);
+        let v = GfVec::from_bytes(&[0xAA, 0xBB, 0xCC, 0xDD]);
+        let result = acc.mac(&v, Gf256::zero()).ok();
+        assert_eq!(result, Some(acc));
     }
 }
