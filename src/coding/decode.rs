@@ -50,6 +50,7 @@ use crate::vector::{GfMatrix, GfVec};
 /// let decoded = decoder.flatten();
 /// assert_eq!(decoded, Some(data));
 /// ```
+#[derive(Clone)]
 #[must_use]
 pub struct DecoderState {
     matrix: GfMatrix,
