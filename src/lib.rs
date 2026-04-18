@@ -44,5 +44,6 @@ pub mod error;
 pub mod field;
 pub mod gossip;
 pub mod lattice;
+pub mod lhs;
 pub mod transport;
 pub mod vector;
