@@ -55,6 +55,7 @@ use crate::auth::Authenticator;
 use crate::coding::decode::DecoderState;
 use crate::coding::encode::Encoder;
 use crate::coding::piece::{CodedPiece, OriginalData};
+use crate::coding::recode::Recoder;
 use crate::error::Error;
 
 /// The on-wire package for a single authenticated coded piece.
@@ -142,6 +143,80 @@ where
             WirePiece::new(c_arc.as_ref().clone(), piece, tag)
         }));
     (commitment, stream)
+}
+
+/// Relay side: verify each incoming [`WirePiece`] against `commitment`,
+/// accumulate the verified pieces into a [`Recoder`], and emit one
+/// freshly-tagged recoded piece per accepted input.
+///
+/// Pieces that fail authentication are silently dropped; they consume no
+/// recoder slot and produce no output.  Pieces that fail the dimension
+/// check inside [`Recoder::add_piece`] are likewise dropped.
+///
+/// # Semantics
+///
+/// This is a *batch-mode* relay: it consumes the entire incoming stream
+/// before emitting anything, because
+/// [`Stream`](comp_cat_rs::effect::stream::Stream) does not expose a
+/// per-element `pull`/`split_head` that would let a stateful transformer
+/// thread its accumulator through one element at a time.  A streaming
+/// variant is a future work item pending a small extension to comp-cat-rs.
+///
+/// # Errors
+///
+/// Propagates any error raised while draining `incoming` (upstream
+/// transport or source failure).
+pub fn relay<A, F>(
+    auth: Arc<A>,
+    commitment: A::Commitment,
+    piece_count: usize,
+    piece_byte_len: usize,
+    incoming: Stream<Error, WirePiece<A>>,
+    rng_factory: F,
+) -> Io<Error, Stream<Error, WirePiece<A>>>
+where
+    A: Authenticator + Send + Sync + 'static,
+    A::Commitment: Clone + Send + Sync + 'static,
+    A::Tag: Clone + Send + Sync + 'static,
+    F: Fn(usize) -> Result<Vec<u8>, Error> + Send + Sync + 'static,
+{
+    let c_arc: Arc<A::Commitment> = Arc::new(commitment);
+    let rng: Arc<F> = Arc::new(rng_factory);
+    incoming.collect().flat_map(move |pieces| {
+        Io::suspend(move || {
+            let (_, outputs) = pieces.into_iter().fold(
+                (
+                    Recoder::new(piece_count, piece_byte_len),
+                    Vec::<WirePiece<A>>::new(),
+                ),
+                |(recoder, outputs), wp: WirePiece<A>| {
+                    if auth.verify(c_arc.as_ref(), wp.piece(), wp.tag()).is_err() {
+                        (recoder, outputs)
+                    } else {
+                        let backup = recoder.clone();
+                        let updated = recoder.add_piece(wp.piece()).unwrap_or(backup);
+                        let rng_clone = Arc::clone(&rng);
+                        let new_outputs = updated
+                            .recode_one(move |n| rng_clone(n))
+                            .run()
+                            .ok()
+                            .map(|piece| {
+                                let tag = auth.tag(c_arc.as_ref(), &piece);
+                                WirePiece::new(c_arc.as_ref().clone(), piece, tag)
+                            })
+                            .into_iter()
+                            .fold(outputs, |acc, wp_out| {
+                                acc.into_iter()
+                                    .chain(core::iter::once(wp_out))
+                                    .collect()
+                            });
+                        (updated, new_outputs)
+                    }
+                },
+            );
+            Ok(Stream::from_vec(outputs))
+        })
+    })
 }
 
 /// Terminal side: verify every incoming [`WirePiece`] against the
@@ -235,6 +310,108 @@ mod tests {
         let decoded = receive(auth, commitment, k, b, stream.take(k)).run();
         assert!(decoded.is_ok());
         assert_eq!(decoded.unwrap_or_default(), data);
+    }
+
+    #[test]
+    fn relay_roundtrip_null_auth() {
+        // source → relay → receive, with NullAuthenticator on every hop.
+        let data = vec![10u8, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120];
+        let orig = OriginalData::from_bytes(&data, 4)
+            .unwrap_or_else(|_| OriginalData::from_bytes(&[0], 1).ok().unwrap());
+        let k = orig.piece_count();
+        let b = orig.piece_byte_len();
+        let auth = Arc::new(NullAuthenticator);
+
+        let (commitment, src_stream) = source(Arc::clone(&auth), orig, vandermonde_rng());
+        let relayed_io = relay(
+            Arc::clone(&auth),
+            commitment,
+            k,
+            b,
+            src_stream.take(k),
+            vandermonde_rng(),
+        );
+        let relayed_stream = relayed_io.run();
+        assert!(relayed_stream.is_ok());
+        let decoded = receive(
+            auth,
+            commitment,
+            k,
+            b,
+            relayed_stream.unwrap_or_else(|_| Stream::from_vec(Vec::new())),
+        )
+        .run();
+        assert!(decoded.is_ok());
+        assert_eq!(decoded.unwrap_or_default(), data);
+    }
+
+    #[test]
+    fn relay_roundtrip_keyed_hash_shared_key() {
+        // source, relay, and receiver all share the same BLAKE3 key.
+        let data = vec![10u8, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120];
+        let orig = OriginalData::from_bytes(&data, 4)
+            .unwrap_or_else(|_| OriginalData::from_bytes(&[0], 1).ok().unwrap());
+        let k = orig.piece_count();
+        let b = orig.piece_byte_len();
+        let auth = Arc::new(KeyedHashAuthenticator::new([0x5Au8; 32]));
+
+        let (commitment, src_stream) = source(Arc::clone(&auth), orig, vandermonde_rng());
+        let relayed_io = relay(
+            Arc::clone(&auth),
+            commitment,
+            k,
+            b,
+            src_stream.take(k),
+            vandermonde_rng(),
+        );
+        let relayed_stream = relayed_io.run();
+        assert!(relayed_stream.is_ok());
+        let decoded = receive(
+            auth,
+            commitment,
+            k,
+            b,
+            relayed_stream.unwrap_or_else(|_| Stream::from_vec(Vec::new())),
+        )
+        .run();
+        assert!(decoded.is_ok());
+        assert_eq!(decoded.unwrap_or_default(), data);
+    }
+
+    #[test]
+    fn relay_drops_pieces_with_wrong_source_key() {
+        // Source uses one key; relay uses a different key.  The relay's
+        // verify step rejects every piece, so it emits an empty stream
+        // and the downstream receive fails with InsufficientPieces.
+        let data = vec![10u8, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120];
+        let orig = OriginalData::from_bytes(&data, 4)
+            .unwrap_or_else(|_| OriginalData::from_bytes(&[0], 1).ok().unwrap());
+        let k = orig.piece_count();
+        let b = orig.piece_byte_len();
+
+        let src_auth = Arc::new(KeyedHashAuthenticator::new([1u8; 32]));
+        let (commitment, src_stream) = source(Arc::clone(&src_auth), orig, vandermonde_rng());
+
+        let relay_auth = Arc::new(KeyedHashAuthenticator::new([2u8; 32]));
+        let relayed_io = relay(
+            Arc::clone(&relay_auth),
+            commitment,
+            k,
+            b,
+            src_stream.take(k),
+            vandermonde_rng(),
+        );
+        let relayed_stream = relayed_io.run();
+        assert!(relayed_stream.is_ok());
+        let decoded = receive(
+            relay_auth,
+            commitment,
+            k,
+            b,
+            relayed_stream.unwrap_or_else(|_| Stream::from_vec(Vec::new())),
+        )
+        .run();
+        assert!(decoded.is_err());
     }
 
     #[test]

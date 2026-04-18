@@ -50,6 +50,7 @@ use crate::vector::GfVec;
 /// });
 /// assert!(recoded.is_some());
 /// ```
+#[derive(Clone)]
 #[must_use]
 pub struct Recoder {
     pieces: Vec<CodedPiece>,
