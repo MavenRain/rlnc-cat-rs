@@ -1,14 +1,14 @@
 //! Sign and Combine operations for the LHS scheme.
 //!
-//! The signature on hash target `h_i ∈ Zq^n` is the integer vector
-//! `σ_i = [R·w ; w] ∈ Z^m`, where `w = G⁻¹(h_i) ∈ {0,1}^{n·k_gadget}`
-//! is the bit-decomposition preimage of `h_i` under the gadget matrix.
+//! The signature on hash target `h ∈ Zq^n` is the integer vector
+//! `σ = [R·w ; w] ∈ Z^m`, where `w = G⁻¹(h) ∈ {0,1}^{n·k_gadget}`
+//! is the bit-decomposition preimage of `h` under the gadget matrix.
 //! The gadget trapdoor identity gives
 //!
 //! ```text
-//! A · σ_i = A_0·(R·w) + A_1·w
-//!         = A_0·R·w + (G - A_0·R)·w
-//!         = G·w = h_i  (mod Q).
+//! A · σ = A_0·(R·w) + A_1·w
+//!       = A_0·R·w + (G - A_0·R)·w
+//!       = G·w = h  (mod Q).
 //! ```
 //!
 //! Linear homomorphism follows: a `Zq`-linear combination of
@@ -18,7 +18,7 @@
 //! the secret key.
 
 use crate::error::Error;
-use crate::lattice::{ZVec, Zq};
+use crate::lattice::{ZVec, Zq, ZqVec};
 use crate::lhs::gadget::gadget_preimage;
 use crate::lhs::keys::{PublicKey, SecretKey};
 
@@ -67,17 +67,17 @@ impl Signature {
     }
 }
 
-/// Sign the public key's `index`-th hash target.
+/// Sign the hash target `target ∈ Zq^n`.
 ///
-/// Produces `σ = [R·w ; w]` where `w = G⁻¹(h_index)` is the
+/// Produces `σ = [R·w ; w]` where `w = G⁻¹(target)` is the
 /// bit-decomposition preimage under the gadget matrix.  By the gadget
-/// trapdoor identity, `A · σ ≡ h_index (mod Q)`, and the norm is
+/// trapdoor identity, `A · σ ≡ target (mod Q)`, and the norm is
 /// bounded by the ternary/bit structure of `R` and `w`.
 ///
 /// # Errors
 ///
-/// - [`Error::DimensionMismatch`] if `index >= params.k_pieces()` or if
-///   the trapdoor matrix shape does not match the gadget width
+/// - [`Error::DimensionMismatch`] if `target.len() != pk.params().n()`,
+///   or if the trapdoor matrix shape does not match the gadget width
 ///   (unreachable when `pk` and `sk` come from the same [`keygen`]
 ///   call).
 ///
@@ -85,18 +85,17 @@ impl Signature {
 pub fn sign<const Q: u32>(
     pk: &PublicKey<Q>,
     sk: &SecretKey<Q>,
-    index: usize,
+    target: &ZqVec<Q>,
 ) -> Result<Signature, Error> {
-    let targets = pk.hash_targets();
-    targets.get(index).map_or_else(
-        || {
-            Err(Error::DimensionMismatch {
-                expected: targets.len(),
-                actual: index,
-            })
-        },
-        |h| {
-            let w_zvec = ZVec::new(gadget_preimage::<Q>(h));
+    let n = pk.params().n();
+    (target.len() == n)
+        .then_some(())
+        .ok_or(Error::DimensionMismatch {
+            expected: n,
+            actual: target.len(),
+        })
+        .and_then(|()| {
+            let w_zvec = ZVec::new(gadget_preimage::<Q>(target));
             sk.r().mul_vec(&w_zvec).map(|r_w| {
                 let entries: Vec<i64> = r_w
                     .entries()
@@ -106,8 +105,7 @@ pub fn sign<const Q: u32>(
                     .collect();
                 Signature::new(ZVec::new(entries))
             })
-        },
-    )
+        })
 }
 
 /// Combine existing signatures under `Zq` coefficients.
@@ -160,18 +158,26 @@ mod tests {
             .unwrap_or_else(unreachable_params)
     }
 
+    /// Deterministic length-2 target derived from an index; every index
+    /// yields a distinct vector so sign/combine tests can operate on
+    /// independent targets without pulling in an RNG.
+    fn fresh_target<const Q: u32>(i: usize) -> ZqVec<Q> {
+        let seed = u32::try_from(i).unwrap_or(0);
+        ZqVec::new(vec![Zq::new(seed.wrapping_add(1)), Zq::new(seed.wrapping_mul(3).wrapping_add(7))])
+    }
+
     #[test]
-    fn sign_produces_signature_verifying_against_hash_target() {
+    fn sign_produces_signature_verifying_against_target() {
         let params = LhsParams::<97>::new(2, 2, 3, 10_000)
             .ok()
             .unwrap_or_else(unreachable_params);
         let keys = keygen(params.clone(), &counter_rng()).ok();
         let all_ok = keys.is_some_and(|(pk, sk)| {
             (0..params.k_pieces()).all(|i| {
-                sign(&pk, &sk, i).ok().is_some_and(|sig| {
+                let target = fresh_target::<97>(i);
+                sign(&pk, &sk, &target).ok().is_some_and(|sig| {
                     let sigma_zq: ZqVec<97> = sig.sigma().reduce_mod();
-                    pk.a().mul_vec(&sigma_zq).ok().as_ref()
-                        == pk.hash_targets().get(i)
+                    pk.a().mul_vec(&sigma_zq).ok() == Some(target)
                 })
             })
         });
@@ -179,12 +185,15 @@ mod tests {
     }
 
     #[test]
-    fn sign_rejects_out_of_bounds_index() {
+    fn sign_rejects_wrong_target_length() {
         let params = LhsParams::<97>::new(2, 2, 2, 10_000)
             .ok()
             .unwrap_or_else(unreachable_params);
         let keys = keygen(params, &counter_rng()).ok();
-        let errored = keys.is_some_and(|(pk, sk)| sign(&pk, &sk, 2).is_err());
+        let errored = keys.is_some_and(|(pk, sk)| {
+            let bad = ZqVec::<97>::new(vec![Zq::new(1), Zq::new(2), Zq::new(3)]);
+            sign(&pk, &sk, &bad).is_err()
+        });
         assert!(errored);
     }
 
@@ -194,7 +203,8 @@ mod tests {
             .ok()
             .unwrap_or_else(unreachable_params);
         let keys = keygen(params.clone(), &counter_rng()).ok();
-        let len = keys.and_then(|(pk, sk)| sign(&pk, &sk, 0).ok().map(|sig| sig.len()));
+        let target = fresh_target::<97>(0);
+        let len = keys.and_then(|(pk, sk)| sign(&pk, &sk, &target).ok().map(|sig| sig.len()));
         assert_eq!(len, Some(params.m()));
     }
 
@@ -204,8 +214,9 @@ mod tests {
             .ok()
             .unwrap_or_else(unreachable_params);
         let keys = keygen(params, &counter_rng()).ok();
+        let target = fresh_target::<97>(0);
         let ok = keys.is_some_and(|(pk, sk)| {
-            sign(&pk, &sk, 0).ok().is_some_and(|sig| {
+            sign(&pk, &sk, &target).ok().is_some_and(|sig| {
                 let c = Zq::<97>::new(3);
                 let combined = combine(&[(c, sig.clone())]).ok();
                 let scaled: Vec<i64> = sig
@@ -227,8 +238,9 @@ mod tests {
             .ok()
             .unwrap_or_else(unreachable_params);
         let keys = keygen(params, &counter_rng()).ok();
+        let target = fresh_target::<97>(0);
         let ok = keys.is_some_and(|(pk, sk)| {
-            sign(&pk, &sk, 0).ok().is_some_and(|sig| {
+            sign(&pk, &sk, &target).ok().is_some_and(|sig| {
                 let c = Zq::<97>::new(95);
                 let combined = combine(&[(c, sig.clone())]).ok();
                 let scaled: Vec<i64> = sig
@@ -249,9 +261,11 @@ mod tests {
             .ok()
             .unwrap_or_else(unreachable_params);
         let keys = keygen(params, &counter_rng()).ok();
+        let t0 = fresh_target::<97>(0);
+        let t1 = fresh_target::<97>(1);
         let ok = keys.is_some_and(|(pk, sk)| {
-            sign(&pk, &sk, 0).ok().is_some_and(|s0| {
-                sign(&pk, &sk, 1).ok().is_some_and(|s1| {
+            sign(&pk, &sk, &t0).ok().is_some_and(|s0| {
+                sign(&pk, &sk, &t1).ok().is_some_and(|s1| {
                     let c0 = Zq::<97>::new(2);
                     let c1 = Zq::<97>::new(95);
                     let combined = combine(&[(c0, s0.clone()), (c1, s1.clone())]).ok();
@@ -275,9 +289,11 @@ mod tests {
             .ok()
             .unwrap_or_else(unreachable_params);
         let keys = keygen(params, &counter_rng()).ok();
+        let t0 = fresh_target::<97>(0);
+        let t1 = fresh_target::<97>(1);
         let ok = keys.is_some_and(|(pk, sk)| {
-            sign(&pk, &sk, 0).ok().is_some_and(|s0| {
-                sign(&pk, &sk, 1).ok().is_some_and(|s1| {
+            sign(&pk, &sk, &t0).ok().is_some_and(|s0| {
+                sign(&pk, &sk, &t1).ok().is_some_and(|s1| {
                     let c0 = Zq::<97>::new(3);
                     let c1 = Zq::<97>::new(5);
                     combine(&[(c0, s0), (c1, s1)]).ok().is_some_and(|sig| {
@@ -285,10 +301,7 @@ mod tests {
                         let lhs = pk.a().mul_vec(&sigma_zq).ok();
                         let rhs = ZqVec::linear_combine(
                             &[c0, c1],
-                            &[
-                                pk.hash_targets()[0].clone(),
-                                pk.hash_targets()[1].clone(),
-                            ],
+                            &[t0.clone(), t1.clone()],
                         )
                         .ok();
                         lhs == rhs

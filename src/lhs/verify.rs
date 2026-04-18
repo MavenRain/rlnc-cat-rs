@@ -104,6 +104,17 @@ mod tests {
             .unwrap_or_else(unreachable_params)
     }
 
+    /// Deterministic length-2 target derived from an index; every index
+    /// yields a distinct vector so verify tests can sign/verify against
+    /// independent targets without pulling in an RNG.
+    fn fresh_target<const Q: u32>(i: usize) -> ZqVec<Q> {
+        let seed = u32::try_from(i).unwrap_or(0);
+        ZqVec::new(vec![
+            Zq::new(seed.wrapping_add(1)),
+            Zq::new(seed.wrapping_mul(3).wrapping_add(7)),
+        ])
+    }
+
     #[test]
     fn fresh_signature_verifies_against_its_target() {
         let params = LhsParams::<97>::new(2, 2, 3, 10_000)
@@ -112,9 +123,10 @@ mod tests {
         let keys = keygen(params, &counter_rng()).ok();
         let ok = keys.is_some_and(|(pk, sk)| {
             (0..pk.params().k_pieces()).all(|i| {
-                sign(&pk, &sk, i)
+                let target = fresh_target::<97>(i);
+                sign(&pk, &sk, &target)
                     .ok()
-                    .is_some_and(|sig| verify(&pk, &sig, &pk.hash_targets()[i]).is_ok())
+                    .is_some_and(|sig| verify(&pk, &sig, &target).is_ok())
             })
         });
         assert!(ok);
@@ -127,16 +139,18 @@ mod tests {
             .unwrap_or_else(unreachable_params);
         let keys = keygen(params, &counter_rng()).ok();
         let ok = keys.is_some_and(|(pk, sk)| {
-            let sigs: Option<Vec<Signature>> = (0..pk.params().k_pieces())
-                .map(|i| sign(&pk, &sk, i).ok())
+            let targets: Vec<ZqVec<97>> =
+                (0..pk.params().k_pieces()).map(fresh_target::<97>).collect();
+            let sigs: Option<Vec<Signature>> = targets
+                .iter()
+                .map(|t| sign(&pk, &sk, t).ok())
                 .collect();
             sigs.is_some_and(|sigs| {
                 let coeffs = vec![Zq::<97>::new(2), Zq::<97>::new(3), Zq::<97>::new(1)];
                 let pairs: Vec<(Zq<97>, Signature)> =
                     coeffs.iter().copied().zip(sigs).collect();
                 let combined = combine(&pairs).ok();
-                let target =
-                    ZqVec::<97>::linear_combine(&coeffs, pk.hash_targets()).ok();
+                let target = ZqVec::<97>::linear_combine(&coeffs, &targets).ok();
                 combined
                     .and_then(|sig| target.map(|t| verify(&pk, &sig, &t)))
                     .is_some_and(|r| r.is_ok())
@@ -151,8 +165,9 @@ mod tests {
             .ok()
             .unwrap_or_else(unreachable_params);
         let keys = keygen(params, &counter_rng()).ok();
+        let target = fresh_target::<97>(0);
         let rejected = keys.is_some_and(|(pk, sk)| {
-            sign(&pk, &sk, 0).ok().is_some_and(|sig| {
+            sign(&pk, &sk, &target).ok().is_some_and(|sig| {
                 let wrong = ZqVec::<97>::new(vec![Zq::new(1), Zq::new(1)]);
                 verify(&pk, &sig, &wrong).is_err()
             })
@@ -166,8 +181,9 @@ mod tests {
             .ok()
             .unwrap_or_else(unreachable_params);
         let keys = keygen(params, &counter_rng()).ok();
+        let target = fresh_target::<97>(0);
         let rejected = keys.is_some_and(|(pk, sk)| {
-            sign(&pk, &sk, 0).ok().is_some_and(|sig| {
+            sign(&pk, &sk, &target).ok().is_some_and(|sig| {
                 // Add 1 to entry 0: norm grows slightly, algebra breaks.
                 let tampered_entries: Vec<i64> = sig
                     .sigma()
@@ -177,7 +193,7 @@ mod tests {
                     .map(|(i, &x)| if i == 0 { x + 1 } else { x })
                     .collect();
                 let tampered = Signature::new(ZVec::new(tampered_entries));
-                verify(&pk, &tampered, &pk.hash_targets()[0]).is_err()
+                verify(&pk, &tampered, &target).is_err()
             })
         });
         assert!(rejected);
@@ -192,8 +208,9 @@ mod tests {
             .ok()
             .unwrap_or_else(unreachable_params);
         let keys = keygen(params, &counter_rng()).ok();
+        let target = fresh_target::<97>(0);
         let rejected = keys.is_some_and(|(pk, sk)| {
-            sign(&pk, &sk, 0).ok().is_some_and(|sig| {
+            sign(&pk, &sk, &target).ok().is_some_and(|sig| {
                 let bloated_entries: Vec<i64> = sig
                     .sigma()
                     .entries()
@@ -202,7 +219,7 @@ mod tests {
                     .map(|(i, &x)| if i == 0 { x + 2 * 97 } else { x })
                     .collect();
                 let bloated = Signature::new(ZVec::new(bloated_entries));
-                verify(&pk, &bloated, &pk.hash_targets()[0]).is_err()
+                verify(&pk, &bloated, &target).is_err()
             })
         });
         assert!(rejected);
@@ -214,9 +231,10 @@ mod tests {
             .ok()
             .unwrap_or_else(unreachable_params);
         let keys = keygen(params, &counter_rng()).ok();
+        let target = fresh_target::<97>(0);
         let rejected = keys.is_some_and(|(pk, _)| {
             let short = Signature::new(ZVec::new(vec![0_i64; 3]));
-            verify(&pk, &short, &pk.hash_targets()[0]).is_err()
+            verify(&pk, &short, &target).is_err()
         });
         assert!(rejected);
     }
@@ -227,8 +245,9 @@ mod tests {
             .ok()
             .unwrap_or_else(unreachable_params);
         let keys = keygen(params, &counter_rng()).ok();
+        let target = fresh_target::<97>(0);
         let rejected = keys.is_some_and(|(pk, sk)| {
-            sign(&pk, &sk, 0).ok().is_some_and(|sig| {
+            sign(&pk, &sk, &target).ok().is_some_and(|sig| {
                 let wrong = ZqVec::<97>::zeros(5);
                 verify(&pk, &sig, &wrong).is_err()
             })

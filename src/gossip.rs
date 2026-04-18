@@ -625,10 +625,15 @@ mod tests {
         assert!(decoded.is_err());
     }
 
+    /// Metadata string every LHS test in this module shares; binds the
+    /// commitment to a fixed per-test generation identifier.  A real
+    /// deployment would pass `H(OriginalData)` or a generation nonce.
+    const LHS_TEST_METADATA: &[u8] = b"gossip-test-generation";
+
     fn build_lhs_auth(seed: usize) -> Option<LatticeHomomorphicAuthenticator<97>> {
         let params = LhsParams::<97>::new(2, 2, 4, 100_000_000).ok()?;
         let (pk, sk) = keygen(params, &keygen_rng(seed)).ok()?;
-        LatticeHomomorphicAuthenticator::new(pk, &sk).ok()
+        LatticeHomomorphicAuthenticator::new(pk, &sk, LHS_TEST_METADATA).ok()
     }
 
     #[test]
@@ -694,6 +699,7 @@ mod tests {
         let relay_auth = source_auth.as_ref().and_then(|sa| {
             LatticeHomomorphicAuthenticator::from_public_artifacts(
                 sa.public_key().clone(),
+                LHS_TEST_METADATA,
                 sa.signed_originals().to_vec(),
             )
             .ok()

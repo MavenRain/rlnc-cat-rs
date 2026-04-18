@@ -1,11 +1,16 @@
 //! Key generation and key types for the LHS scheme.
 //!
 //! The public key carries the public matrix `A = [A_0 | G - A_0·R]`
-//! together with the per-piece hash targets `h_1, …, h_k` and the
-//! full parameter set.  The secret key carries the trapdoor `R` — the
-//! short matrix with ternary entries that lets the signer produce
+//! and the parameter set.  The secret key carries the trapdoor `R` —
+//! the short matrix with ternary entries that lets the signer produce
 //! short preimages under `A` via the gadget identity
 //! `A · [R·w ; w] = G·w`.
+//!
+//! Hash targets `h_i` are *not* part of the keypair.  They are
+//! per-generation data derived from caller-supplied metadata by the
+//! authenticator layer (see [`crate::lhs::LatticeHomomorphicAuthenticator`]).
+//! That keeps the keypair reusable across many generations and binds
+//! each generation's commitment to the file it authenticates.
 
 use crate::error::Error;
 use crate::lattice::{ZMatrix, Zq, ZqMatrix, ZqVec};
@@ -17,40 +22,24 @@ use crate::lhs::params::LhsParams;
 #[must_use]
 pub struct PublicKey<const Q: u32> {
     a: ZqMatrix<Q>,
-    hash_targets: Vec<ZqVec<Q>>,
     params: LhsParams<Q>,
 }
 
 impl<const Q: u32> PublicKey<Q> {
-    /// Build a public key from its three components.
+    /// Build a public key from the public matrix.
     ///
     /// # Errors
     ///
     /// - [`Error::DimensionMismatch`] if `a`'s shape is not
-    ///   `params.n() × params.m()` or if `hash_targets.len() !=
-    ///   params.k_pieces()` or if any hash target has length other
-    ///   than `params.n()`.
-    pub fn new(
-        a: ZqMatrix<Q>,
-        hash_targets: Vec<ZqVec<Q>>,
-        params: LhsParams<Q>,
-    ) -> Result<Self, Error> {
-        let (n, m, k) = (params.n(), params.m(), params.k_pieces());
-        if a.rows() == n
-            && a.cols() == m
-            && hash_targets.len() == k
-            && hash_targets.iter().all(|h| h.len() == n)
-        {
-            Ok(Self {
-                a,
-                hash_targets,
-                params,
-            })
+    ///   `params.n() × params.m()`.
+    pub fn new(a: ZqMatrix<Q>, params: LhsParams<Q>) -> Result<Self, Error> {
+        let (n, m) = (params.n(), params.m());
+        if a.rows() == n && a.cols() == m {
+            Ok(Self { a, params })
         } else {
             Err(Error::DimensionMismatch {
-                expected: n * m + n * k,
-                actual: a.rows() * a.cols()
-                    + hash_targets.iter().map(ZqVec::len).sum::<usize>(),
+                expected: n * m,
+                actual: a.rows() * a.cols(),
             })
         }
     }
@@ -58,11 +47,6 @@ impl<const Q: u32> PublicKey<Q> {
     /// The public matrix `A`.
     pub fn a(&self) -> &ZqMatrix<Q> {
         &self.a
-    }
-
-    /// All hash targets `h_1, …, h_k`.
-    pub fn hash_targets(&self) -> &[ZqVec<Q>] {
-        &self.hash_targets
     }
 
     /// The parameter set.
@@ -114,7 +98,6 @@ impl<const Q: u32> SecretKey<Q> {
 /// Samples:
 /// - a uniform `A_0 ∈ Zq^{n × m0}`,
 /// - a ternary `R ∈ Z^{m0 × (n·k_gadget)}` with entries in `{-1, 0, 1}`,
-/// - `k_pieces` uniform hash targets `h_i ∈ Zq^n`,
 ///
 /// and assembles `A = [A_0 | G - A_0·R]` so that
 /// `A · [R·w ; w] = G·w` for every `w`.
@@ -122,7 +105,7 @@ impl<const Q: u32> SecretKey<Q> {
 /// # Errors
 ///
 /// - [`Error::RandomGenerationFailed`] from any of the underlying
-///   samplers (uniform `Zq`, ternary bytes, hash-target sampling).
+///   samplers (uniform `Zq`, ternary bytes).
 /// - [`Error::DimensionMismatch`] if assembly of intermediate matrices
 ///   fails (unreachable for well-formed parameters).
 pub fn keygen<const Q: u32, F>(
@@ -134,20 +117,14 @@ where
 {
     let (n, m0) = (params.n(), params.m0());
     let g_width = params.gadget_width();
-    let k_pieces = params.k_pieces();
 
     ZqMatrix::<Q>::sample(n, m0, rng).and_then(|a_0| {
         sample_ternary(m0 * g_width, rng).and_then(|r_data| {
             ZMatrix::new(m0, g_width, r_data).and_then(|r| {
                 build_a1::<Q>(&a_0, &r, n, g_width).and_then(|a_1| {
                     assemble_full_a(&a_0, &a_1, n, m0, g_width).and_then(|a| {
-                        sample_hash_targets::<Q, F>(n, k_pieces, rng).and_then(
-                            |hash_targets| {
-                                PublicKey::new(a, hash_targets, params.clone()).and_then(
-                                    |pk| SecretKey::new(r, params).map(|sk| (pk, sk)),
-                                )
-                            },
-                        )
+                        PublicKey::new(a, params.clone())
+                            .and_then(|pk| SecretKey::new(r, params).map(|sk| (pk, sk)))
                     })
                 })
             })
@@ -245,22 +222,10 @@ fn assemble_full_a<const Q: u32>(
     ZqMatrix::new(n, m, data)
 }
 
-fn sample_hash_targets<const Q: u32, F>(
-    n: usize,
-    k_pieces: usize,
-    rng: &F,
-) -> Result<Vec<ZqVec<Q>>, Error>
-where
-    F: Fn(usize) -> Result<Vec<u8>, Error>,
-{
-    (0..k_pieces)
-        .map(|_| ZqVec::<Q>::sample(n, rng))
-        .collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lattice::ZVec;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -287,10 +252,6 @@ mod tests {
             Some(params.m()),
         );
         assert_eq!(
-            keys.as_ref().map(|(pk, _)| pk.hash_targets().len()),
-            Some(3),
-        );
-        assert_eq!(
             keys.as_ref().map(|(_, sk)| sk.r().rows()),
             Some(params.m0()),
         );
@@ -312,31 +273,18 @@ mod tests {
         let ok = keys.is_some_and(|(pk, sk)| {
             let g_width = params.gadget_width();
             let w: Vec<i64> = (0..g_width).map(|j| i64::from(u8::from(j % 2 == 0))).collect();
-            let w_zvec = crate::lattice::ZVec::new(w.clone());
+            let w_zvec = ZVec::new(w.clone());
             let r_w = sk.r().mul_vec(&w_zvec).ok();
             r_w.is_some_and(|r_w| {
                 let sigma_entries: Vec<i64> =
                     r_w.entries().iter().copied().chain(w.iter().copied()).collect();
-                let sigma_zq: ZqVec<97> =
-                    crate::lattice::ZVec::new(sigma_entries).reduce_mod();
+                let sigma_zq: ZqVec<97> = ZVec::new(sigma_entries).reduce_mod();
                 let a_sigma = pk.a().mul_vec(&sigma_zq).ok();
                 let g_w = crate::lhs::gadget::gadget_apply::<97>(&w, params.n());
                 a_sigma == Some(g_w)
             })
         });
         assert!(ok);
-    }
-
-    #[test]
-    fn keygen_hash_targets_have_correct_dim() {
-        let params = LhsParams::<97>::new(3, 2, 5, 10_000)
-            .ok()
-            .unwrap_or_else(unreachable_params);
-        let keys = keygen(params, &counter_rng()).ok();
-        let all_n = keys.is_some_and(|(pk, _)| {
-            pk.hash_targets().iter().all(|h| h.len() == 3)
-        });
-        assert!(all_n);
     }
 
     #[test]
@@ -349,14 +297,12 @@ mod tests {
     }
 
     #[test]
-    fn public_key_construction_rejects_mismatched_shapes() {
+    fn public_key_construction_rejects_mismatched_shape() {
         let params = LhsParams::<97>::new(2, 2, 3, 10_000)
             .ok()
             .unwrap_or_else(unreachable_params);
-        // Wrong number of rows in A.
         let a = ZqMatrix::<97>::zeros(1, params.m());
-        let targets: Vec<ZqVec<97>> = (0..3).map(|_| ZqVec::zeros(2)).collect();
-        assert!(PublicKey::new(a, targets, params).is_err());
+        assert!(PublicKey::new(a, params).is_err());
     }
 
     fn unreachable_params<const Q: u32>() -> LhsParams<Q> {

@@ -175,7 +175,8 @@ mod tests {
     use crate::coding::piece::OriginalData;
     use crate::field::Gf256;
     use crate::gossip::{WirePiece, receive, relay_fanout, source};
-    use std::sync::atomic::{AtomicU32, Ordering};
+    use crate::lhs::{LatticeHomomorphicAuthenticator, LhsParams, keygen};
+    use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
     fn vandermonde_rng() -> impl Fn(usize) -> Result<Vec<u8>, Error> + Send + Sync + 'static {
         let counter = Arc::new(AtomicU32::new(0));
@@ -187,6 +188,28 @@ mod tests {
                 .map(|j| (0..j).fold(Gf256::one(), |acc, _| acc * base).value())
                 .collect())
         }
+    }
+
+    fn keygen_rng(seed: usize) -> impl Fn(usize) -> Result<Vec<u8>, Error> + Send + Sync + 'static {
+        let counter = Arc::new(AtomicUsize::new(seed));
+        move |n: usize| -> Result<Vec<u8>, Error> {
+            let i = counter.fetch_add(1, Ordering::Relaxed);
+            #[allow(clippy::cast_possible_truncation)]
+            Ok((0..n)
+                .map(|j| ((i.wrapping_mul(0x9E37_79B9) + j) & 0xFF) as u8)
+                .collect())
+        }
+    }
+
+    /// Metadata string every LHS test in this module shares; binds the
+    /// commitment to a fixed per-test generation identifier.  A real
+    /// deployment would pass `H(OriginalData)` or a generation nonce.
+    const LHS_TEST_METADATA: &[u8] = b"transport-test-generation";
+
+    fn build_lhs_auth(seed: usize) -> Option<LatticeHomomorphicAuthenticator<97>> {
+        let params = LhsParams::<97>::new(2, 2, 4, 100_000_000).ok()?;
+        let (pk, sk) = keygen(params, &keygen_rng(seed)).ok()?;
+        LatticeHomomorphicAuthenticator::new(pk, &sk, LHS_TEST_METADATA).ok()
     }
 
     #[test]
@@ -290,5 +313,94 @@ mod tests {
         let decoded = receive(auth, commitment, k, b, node_2_inbox).run();
         assert!(decoded.is_ok());
         assert_eq!(decoded.unwrap_or_default(), data);
+    }
+
+    #[test]
+    fn three_node_pipeline_lhs_auth() {
+        // Node 0 (source) → Node 1 (relay_fanout peer_count=1) → Node 2
+        // (receive), with every hop authenticating pieces through the
+        // BF11 linearly homomorphic signature scheme.  The relay holds
+        // only the public artefacts (pk, σ_originals) and still tags
+        // recoded pieces, exercising the homomorphic property across
+        // the full wire transport.
+        let data = vec![10u8, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120];
+        let orig = OriginalData::from_bytes(&data, 4)
+            .unwrap_or_else(|_| OriginalData::from_bytes(&[0], 1).ok().unwrap());
+        let k = orig.piece_count();
+        let b = orig.piece_byte_len();
+
+        let source_auth = build_lhs_auth(0).map(Arc::new);
+        let relay_auth = source_auth.as_ref().and_then(|sa| {
+            LatticeHomomorphicAuthenticator::from_public_artifacts(
+                sa.public_key().clone(),
+                LHS_TEST_METADATA,
+                sa.signed_originals().to_vec(),
+            )
+            .ok()
+            .map(Arc::new)
+        });
+
+        type Packet = WirePiece<LatticeHomomorphicAuthenticator<97>>;
+
+        let decoded = source_auth.zip(relay_auth).and_then(|(sa, ra)| {
+            let transports = InMemoryNetwork::<Packet>::new(3).into_transports();
+            let triple: [InMemoryTransport<Packet>; 3] = transports.try_into().ok()?;
+            let [t0, t1, t2] = triple;
+            let t0_sender = t0.sender();
+            let t1_sender = t1.sender();
+            let t1_inbox = t1.into_inbound();
+            let t2_inbox = t2.into_inbound();
+            drop(t0);
+
+            let (commitment, src_stream) = source(Arc::clone(&sa), orig, vandermonde_rng());
+            src_stream
+                .take(k)
+                .fold(
+                    (),
+                    Arc::new(move |(), wp: Packet| {
+                        t0_sender
+                            .send(PeerIndex::from(1), wp)
+                            .run()
+                            .unwrap_or(());
+                    }),
+                )
+                .run()
+                .unwrap_or(());
+
+            let node_1_inbox = t1_inbox
+                .take(k)
+                .map(Arc::new(|(_, wp): (PeerIndex, Packet)| wp));
+            let fanned = relay_fanout(
+                ra,
+                commitment,
+                k,
+                b,
+                1,
+                node_1_inbox,
+                vandermonde_rng(),
+            )
+            .run()
+            .unwrap_or_else(|_| Stream::from_vec(Vec::new()));
+            fanned
+                .fold(
+                    (),
+                    Arc::new(
+                        move |(), (_, wp): (PeerIndex, Packet)| {
+                            t1_sender
+                                .send(PeerIndex::from(2), wp)
+                                .run()
+                                .unwrap_or(());
+                        },
+                    ),
+                )
+                .run()
+                .unwrap_or(());
+
+            let node_2_inbox = t2_inbox
+                .take(k)
+                .map(Arc::new(|(_, wp): (PeerIndex, Packet)| wp));
+            receive(sa, commitment, k, b, node_2_inbox).run().ok()
+        });
+        assert_eq!(decoded, Some(data));
     }
 }
