@@ -43,4 +43,5 @@ pub mod coding;
 pub mod error;
 pub mod field;
 pub mod gossip;
+pub mod transport;
 pub mod vector;

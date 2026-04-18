@@ -57,6 +57,9 @@ pub enum Error {
     /// An authenticator rejected a piece: its tag did not match the
     /// expected value for the given commitment.
     AuthenticatorRejected,
+
+    /// A transport operation (send or receive) failed.
+    TransportFailed(String),
 }
 
 impl fmt::Display for Error {
@@ -91,6 +94,9 @@ impl fmt::Display for Error {
             }
             Self::AuthenticatorRejected => {
                 write!(f, "authenticator rejected the piece")
+            }
+            Self::TransportFailed(msg) => {
+                write!(f, "transport failed: {msg}")
             }
         }
     }
