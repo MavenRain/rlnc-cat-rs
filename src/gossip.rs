@@ -58,6 +58,35 @@ use crate::coding::piece::{CodedPiece, OriginalData};
 use crate::coding::recode::Recoder;
 use crate::error::Error;
 
+/// A zero-based identifier for one of the outbound peers a relay
+/// fans each accepted input out to.
+///
+/// The mapping from [`PeerIndex`] to a concrete network peer address
+/// is the caller's responsibility; this crate tracks only the index.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[must_use]
+pub struct PeerIndex(usize);
+
+impl From<usize> for PeerIndex {
+    fn from(i: usize) -> Self {
+        Self(i)
+    }
+}
+
+impl From<PeerIndex> for usize {
+    fn from(p: PeerIndex) -> Self {
+        p.0
+    }
+}
+
+impl PeerIndex {
+    /// The underlying integer index.
+    #[must_use]
+    pub fn value(self) -> usize {
+        self.0
+    }
+}
+
 /// The on-wire package for a single authenticated coded piece.
 ///
 /// Bundles the generation commitment, the coded piece itself, and the
@@ -196,20 +225,93 @@ where
                         let backup = recoder.clone();
                         let updated = recoder.add_piece(wp.piece()).unwrap_or(backup);
                         let rng_clone = Arc::clone(&rng);
-                        let new_outputs = updated
+                        let maybe_item = updated
                             .recode_one(move |n| rng_clone(n))
                             .run()
                             .ok()
                             .map(|piece| {
                                 let tag = auth.tag(c_arc.as_ref(), &piece);
                                 WirePiece::new(c_arc.as_ref().clone(), piece, tag)
-                            })
-                            .into_iter()
-                            .fold(outputs, |acc, wp_out| {
-                                acc.into_iter()
-                                    .chain(core::iter::once(wp_out))
-                                    .collect()
                             });
+                        let new_outputs = outputs.into_iter().chain(maybe_item).collect();
+                        (updated, new_outputs)
+                    }
+                },
+            );
+            Ok(Stream::from_vec(outputs))
+        })
+    })
+}
+
+/// Multi-peer variant of [`relay`]: per accepted input, emit `peer_count`
+/// freshly-tagged recoded pieces, each with independent coefficients
+/// drawn from `rng_factory`, tagged with the outbound [`PeerIndex`]
+/// so the caller can dispatch them to distinct peers.
+///
+/// Authentication failures and dimension mismatches on incoming pieces
+/// are handled identically to [`relay`]: silent drop, no output, no
+/// recoder slot consumed.
+///
+/// # Semantics
+///
+/// This is a *batch-mode* fanout for the same reason described in
+/// [`relay`]'s documentation.  The output order is:
+/// `[(peer_0, ...), (peer_1, ...), ..., (peer_{n-1}, ...)]` for the
+/// first accepted input, then the same block for the second accepted
+/// input, and so on.  Partition by [`PeerIndex`] to get per-peer streams.
+///
+/// # Errors
+///
+/// Propagates any error raised while draining `incoming`.
+pub fn relay_fanout<A, F>(
+    auth: Arc<A>,
+    commitment: A::Commitment,
+    piece_count: usize,
+    piece_byte_len: usize,
+    peer_count: usize,
+    incoming: Stream<Error, WirePiece<A>>,
+    rng_factory: F,
+) -> Io<Error, Stream<Error, (PeerIndex, WirePiece<A>)>>
+where
+    A: Authenticator + Send + Sync + 'static,
+    A::Commitment: Clone + Send + Sync + 'static,
+    A::Tag: Clone + Send + Sync + 'static,
+    F: Fn(usize) -> Result<Vec<u8>, Error> + Send + Sync + 'static,
+{
+    let c_arc: Arc<A::Commitment> = Arc::new(commitment);
+    let rng: Arc<F> = Arc::new(rng_factory);
+    incoming.collect().flat_map(move |pieces| {
+        Io::suspend(move || {
+            let (_, outputs) = pieces.into_iter().fold(
+                (
+                    Recoder::new(piece_count, piece_byte_len),
+                    Vec::<(PeerIndex, WirePiece<A>)>::new(),
+                ),
+                |(recoder, outputs), wp: WirePiece<A>| {
+                    if auth.verify(c_arc.as_ref(), wp.piece(), wp.tag()).is_err() {
+                        (recoder, outputs)
+                    } else {
+                        let backup = recoder.clone();
+                        let updated = recoder.add_piece(wp.piece()).unwrap_or(backup);
+                        let new_outputs = (0..peer_count).fold(outputs, |acc, peer_idx| {
+                            let rng_clone = Arc::clone(&rng);
+                            let maybe_item = updated
+                                .recode_one(move |n| rng_clone(n))
+                                .run()
+                                .ok()
+                                .map(|piece| {
+                                    let tag = auth.tag(c_arc.as_ref(), &piece);
+                                    (
+                                        PeerIndex::from(peer_idx),
+                                        WirePiece::new(
+                                            c_arc.as_ref().clone(),
+                                            piece,
+                                            tag,
+                                        ),
+                                    )
+                                });
+                            acc.into_iter().chain(maybe_item).collect()
+                        });
                         (updated, new_outputs)
                     }
                 },
@@ -376,6 +478,82 @@ mod tests {
         .run();
         assert!(decoded.is_ok());
         assert_eq!(decoded.unwrap_or_default(), data);
+    }
+
+    #[test]
+    fn relay_fanout_each_peer_decodes() {
+        // fanout with peer_count=3; each peer's slice independently reconstructs the data.
+        let data = vec![10u8, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120];
+        let orig = OriginalData::from_bytes(&data, 4)
+            .unwrap_or_else(|_| OriginalData::from_bytes(&[0], 1).ok().unwrap());
+        let k = orig.piece_count();
+        let b = orig.piece_byte_len();
+        let peer_count = 3;
+        let auth = Arc::new(NullAuthenticator);
+
+        let (commitment, src_stream) = source(Arc::clone(&auth), orig, vandermonde_rng());
+        let fanned_stream = relay_fanout(
+            Arc::clone(&auth),
+            commitment,
+            k,
+            b,
+            peer_count,
+            src_stream.take(k),
+            vandermonde_rng(),
+        )
+        .run()
+        .unwrap_or_else(|_| Stream::from_vec(Vec::new()));
+
+        let all_pairs = fanned_stream.collect().run().unwrap_or_default();
+        assert_eq!(all_pairs.len(), peer_count * k);
+
+        (0..peer_count).for_each(|peer_i| {
+            let peer_pieces: Vec<WirePiece<NullAuthenticator>> = all_pairs
+                .iter()
+                .filter(|(idx, _)| idx.value() == peer_i)
+                .map(|(_, wp)| wp.clone())
+                .collect();
+            assert_eq!(peer_pieces.len(), k);
+
+            let peer_stream = Stream::from_vec(peer_pieces);
+            let decoded = receive(Arc::clone(&auth), commitment, k, b, peer_stream).run();
+            assert!(decoded.is_ok(), "peer {peer_i} failed to decode");
+            assert_eq!(decoded.unwrap_or_default(), data);
+        });
+    }
+
+    #[test]
+    fn relay_fanout_emits_exact_peer_count_per_accepted_input() {
+        let data = vec![1u8, 2, 3, 4, 5, 6, 7, 8];
+        let orig = OriginalData::from_bytes(&data, 4)
+            .unwrap_or_else(|_| OriginalData::from_bytes(&[0], 1).ok().unwrap());
+        let k = orig.piece_count();
+        let b = orig.piece_byte_len();
+        let peer_count = 5;
+        let auth = Arc::new(NullAuthenticator);
+
+        let (commitment, src_stream) = source(Arc::clone(&auth), orig, vandermonde_rng());
+        let fanned_stream = relay_fanout(
+            auth,
+            commitment,
+            k,
+            b,
+            peer_count,
+            src_stream.take(k),
+            vandermonde_rng(),
+        )
+        .run()
+        .unwrap_or_else(|_| Stream::from_vec(Vec::new()));
+        let all_pairs = fanned_stream.collect().run().unwrap_or_default();
+
+        assert_eq!(all_pairs.len(), peer_count * k);
+        (0..peer_count).for_each(|peer_i| {
+            let per_peer = all_pairs
+                .iter()
+                .filter(|(idx, _)| idx.value() == peer_i)
+                .count();
+            assert_eq!(per_peer, k, "peer {peer_i} count");
+        });
     }
 
     #[test]
