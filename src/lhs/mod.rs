@@ -40,12 +40,14 @@
 //! preimage which is sound but not statistically close to the claimed
 //! distribution.
 
+mod authenticator;
 mod gadget;
 mod keys;
 mod params;
 mod sign;
 mod verify;
 
+pub use authenticator::{Commitment, LatticeHomomorphicAuthenticator};
 pub use keys::{PublicKey, SecretKey, keygen};
 pub use params::LhsParams;
 pub use sign::{Signature, combine, sign};

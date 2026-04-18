@@ -367,7 +367,8 @@ mod tests {
     use super::*;
     use crate::auth::{KeyedHashAuthenticator, NullAuthenticator};
     use crate::field::Gf256;
-    use std::sync::atomic::{AtomicU32, Ordering};
+    use crate::lhs::{LatticeHomomorphicAuthenticator, LhsParams, keygen};
+    use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
     /// An RNG that returns a Vandermonde row per call: the i-th invocation
     /// yields `[1, base, base^2, ..., base^(n-1)]` where `base = (i % 255) + 1`.
@@ -380,6 +381,19 @@ mod tests {
             let base = Gf256::new(((i % 255 + 1) & 0xFF) as u8);
             Ok((0..n)
                 .map(|j| (0..j).fold(Gf256::one(), |acc, _| acc * base).value())
+                .collect())
+        }
+    }
+
+    /// Distinct-seed integer RNG for LHS keygen.  Avoids colliding with
+    /// the Vandermonde RNG used for coding-vector generation.
+    fn keygen_rng(seed: usize) -> impl Fn(usize) -> Result<Vec<u8>, Error> + Send + Sync + 'static {
+        let counter = Arc::new(AtomicUsize::new(seed));
+        move |n: usize| -> Result<Vec<u8>, Error> {
+            let i = counter.fetch_add(1, Ordering::Relaxed);
+            #[allow(clippy::cast_possible_truncation)]
+            Ok((0..n)
+                .map(|j| ((i.wrapping_mul(0x9E37_79B9) + j) & 0xFF) as u8)
                 .collect())
         }
     }
@@ -609,5 +623,118 @@ mod tests {
         let receiver_auth = Arc::new(KeyedHashAuthenticator::new([2u8; 32]));
         let decoded = receive(receiver_auth, commitment, k, b, stream.take(k)).run();
         assert!(decoded.is_err());
+    }
+
+    fn build_lhs_auth(seed: usize) -> Option<LatticeHomomorphicAuthenticator<97>> {
+        let params = LhsParams::<97>::new(2, 2, 4, 100_000_000).ok()?;
+        let (pk, sk) = keygen(params, &keygen_rng(seed)).ok()?;
+        LatticeHomomorphicAuthenticator::new(pk, &sk).ok()
+    }
+
+    #[test]
+    fn lhs_auth_source_to_receive_roundtrip() {
+        // The source tags k coded pieces homomorphically; the receiver
+        // verifies each tag, admits the piece, and decodes the payload.
+        let data = vec![10u8, 20, 30, 40, 50, 60, 70, 80];
+        let orig = OriginalData::from_bytes(&data, 4)
+            .unwrap_or_else(|_| OriginalData::from_bytes(&[0], 1).ok().unwrap());
+        let k = orig.piece_count();
+        let b = orig.piece_byte_len();
+        let auth = build_lhs_auth(0).map(Arc::new);
+
+        let decoded = auth.and_then(|a| {
+            let (commitment, stream) = source(Arc::clone(&a), orig, vandermonde_rng());
+            receive(a, commitment, k, b, stream.take(k)).run().ok()
+        });
+        assert_eq!(decoded, Some(data));
+    }
+
+    #[test]
+    fn lhs_auth_source_to_relay_to_receive_roundtrip() {
+        // A relay in the middle re-tags every recoded piece using only
+        // the public broadcast artefacts (pk, σ_1, …, σ_k).  The
+        // downstream receiver verifies and decodes end-to-end.
+        let data = vec![10u8, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120];
+        let orig = OriginalData::from_bytes(&data, 4)
+            .unwrap_or_else(|_| OriginalData::from_bytes(&[0], 1).ok().unwrap());
+        let k = orig.piece_count();
+        let b = orig.piece_byte_len();
+        let auth = build_lhs_auth(0).map(Arc::new);
+
+        let decoded = auth.and_then(|a| {
+            let (commitment, src_stream) = source(Arc::clone(&a), orig, vandermonde_rng());
+            let relayed_stream = relay(
+                Arc::clone(&a),
+                commitment,
+                k,
+                b,
+                src_stream.take(k),
+                vandermonde_rng(),
+            )
+            .run()
+            .ok()?;
+            receive(a, commitment, k, b, relayed_stream).run().ok()
+        });
+        assert_eq!(decoded, Some(data));
+    }
+
+    #[test]
+    fn lhs_auth_relay_from_public_artifacts_only() {
+        // The relay never sees the secret key.  It reconstructs its
+        // authenticator via from_public_artifacts(pk, σ_originals) and
+        // still produces verifiable tags — the homomorphic property
+        // that distinguishes BFKW09 from MAC-style authenticators.
+        let data = vec![10u8, 20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120];
+        let orig = OriginalData::from_bytes(&data, 4)
+            .unwrap_or_else(|_| OriginalData::from_bytes(&[0], 1).ok().unwrap());
+        let k = orig.piece_count();
+        let b = orig.piece_byte_len();
+
+        let source_auth = build_lhs_auth(0).map(Arc::new);
+        let relay_auth = source_auth.as_ref().and_then(|sa| {
+            LatticeHomomorphicAuthenticator::from_public_artifacts(
+                sa.public_key().clone(),
+                sa.signed_originals().to_vec(),
+            )
+            .ok()
+            .map(Arc::new)
+        });
+
+        let decoded = source_auth.zip(relay_auth).and_then(|(sa, ra)| {
+            let (commitment, src_stream) = source(Arc::clone(&sa), orig, vandermonde_rng());
+            let relayed_stream = relay(
+                ra,
+                commitment,
+                k,
+                b,
+                src_stream.take(k),
+                vandermonde_rng(),
+            )
+            .run()
+            .ok()?;
+            receive(sa, commitment, k, b, relayed_stream).run().ok()
+        });
+        assert_eq!(decoded, Some(data));
+    }
+
+    #[test]
+    fn lhs_auth_receiver_with_wrong_generation_rejects() {
+        // The source authenticates under generation A; the receiver
+        // holds generation B's artefacts.  Every tag fails the
+        // commitment-binding check, so decode errors out.
+        let data = vec![10u8, 20, 30, 40, 50, 60, 70, 80];
+        let orig = OriginalData::from_bytes(&data, 4)
+            .unwrap_or_else(|_| OriginalData::from_bytes(&[0], 1).ok().unwrap());
+        let k = orig.piece_count();
+        let b = orig.piece_byte_len();
+
+        let source_auth = build_lhs_auth(0).map(Arc::new);
+        let wrong_auth = build_lhs_auth(10_000).map(Arc::new);
+
+        let decoded = source_auth.zip(wrong_auth).map(|(sa, wa)| {
+            let (commitment, stream) = source(sa, orig, vandermonde_rng());
+            receive(wa, commitment, k, b, stream.take(k)).run()
+        });
+        assert!(decoded.is_some_and(|r| r.is_err()));
     }
 }
