@@ -7,15 +7,26 @@
 //! - [`ZqVec`]: vectors with linear combinations and squared L2 norm
 //!   (in the balanced signed-representative interpretation).
 //! - [`ZqMatrix`]: row-major matrices with matrix-vector multiplication.
+//! - [`ZVec`] / [`ZMatrix`]: integer counterparts without modular
+//!   reduction, with `reduce_mod` projections into `Z/qZ`.
+//! - [`discrete_gaussian`]: rejection sampler for `D_{Z, σ, c}`.
+//! - [`PreimageContext`]: Babai nearest-plane and Klein Gaussian
+//!   preimage sampling over a lattice with a known basis.
 //!
 //! These types are the substrate for the upcoming BF11-style linearly
 //! homomorphic signature scheme that will let a recoding gossip relay
 //! produce authenticated pieces without the source's key.
 
+mod gaussian;
 mod matrix;
+mod preimage;
+mod signed;
 mod vector;
 mod zq;
 
+pub use gaussian::discrete_gaussian;
 pub use matrix::ZqMatrix;
+pub use preimage::PreimageContext;
+pub use signed::{ZMatrix, ZVec};
 pub use vector::ZqVec;
 pub use zq::Zq;
