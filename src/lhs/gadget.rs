@@ -36,10 +36,14 @@ pub fn gadget_preimage<const Q: u32>(u: &ZqVec<Q>) -> Vec<i64> {
 /// Apply the gadget matrix: compute `G · w (mod Q)` for `w ∈ Z^{n·k}`
 /// and return the resulting `Zq^n`.
 ///
+/// Used by the trapdoor-identity sanity checks in the tests for
+/// [`crate::lhs::keys`] and this module; not part of the public API.
+///
 /// The slice `w` must have length `n * k_gadget`; shorter slices
 /// truncate and longer slices are read only through index
 /// `n · k_gadget - 1`.
-pub fn gadget_apply<const Q: u32>(w: &[i64], n: usize) -> ZqVec<Q> {
+#[cfg(test)]
+pub(crate) fn gadget_apply<const Q: u32>(w: &[i64], n: usize) -> ZqVec<Q> {
     let k = LhsParams::<Q>::k_gadget();
     let entries: Vec<Zq<Q>> = (0..n)
         .map(|i| {
@@ -78,6 +82,7 @@ fn reduce_u64<const Q: u32>(v: u64) -> Zq<Q> {
     Zq::<Q>::new(r)
 }
 
+#[cfg(test)]
 fn reduce_i64<const Q: u32>(v: i64) -> Zq<Q> {
     let q = i64::from(Q);
     let r = v.rem_euclid(q);
