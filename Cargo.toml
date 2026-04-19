@@ -1,6 +1,6 @@
 [package]
 name = "rlnc-cat-rs"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 description = "Random Linear Network Coding over GF(2^8), built on comp-cat-rs"
 license = "MIT OR Apache-2.0"
