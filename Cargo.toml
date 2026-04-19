@@ -21,6 +21,10 @@ proptest = "1"
 name = "mac"
 harness = false
 
+[[bench]]
+name = "lhs"
+harness = false
+
 [lints.clippy]
 all = { level = "deny", priority = -1 }
 pedantic = "warn"
