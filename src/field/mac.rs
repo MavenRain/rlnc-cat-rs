@@ -17,10 +17,16 @@
 //! and GF(2^8) multiplication distributes over XOR, so
 //! `scalar * b = low[b & 0x0F] XOR high[b >> 4]`.
 //!
-//! The resulting loop is `acc[i] XOR low[v[i] & 0x0F] XOR high[v[i] >> 4]`.
-//! On aarch64 LLVM is able to lower this to `TBL` (byte-permute) on
-//! 16-byte chunks; on `x86_64` it can lower to `pshufb`.  No unsafe,
-//! no intrinsics, no feature flags.
+//! The body is the iterator pipeline
+//! `acc.iter().zip(v.iter()).map(mix_byte).collect()`, with all
+//! table reads routed through panic-free `Option::unwrap_or`
+//! fallthroughs and all nibble-to-index conversions through
+//! [`usize::from`] / [`u8::try_from`].  Today LLVM does **not**
+//! auto-vectorize this indirect table-lookup pattern into `TBL`
+//! (aarch64) or `pshufb` (`x86_64`), so the compute loop runs at
+//! scalar throughput.  A true SIMD lowering would require explicit
+//! intrinsics or the nightly `core::simd` API; neither is used here,
+//! in keeping with the crate's no-`unsafe`, stable-only policy.
 
 use crate::error::Error;
 use crate::field::Gf256;
@@ -51,12 +57,7 @@ pub fn mac(acc: &[Gf256], v: &[Gf256], scalar: Gf256) -> Result<Vec<Gf256>, Erro
         Ok(acc
             .iter()
             .zip(v.iter())
-            .map(|(&a, &b)| {
-                let bv = b.value();
-                let lo = low[(bv & 0x0F) as usize];
-                let hi = high[(bv >> 4) as usize];
-                Gf256::new(a.value() ^ lo ^ hi)
-            })
+            .map(|(&a, &b)| mix_byte(a, b, &low, &high))
             .collect())
     } else {
         Err(Error::DimensionMismatch {
@@ -66,12 +67,31 @@ pub fn mac(acc: &[Gf256], v: &[Gf256], scalar: Gf256) -> Result<Vec<Gf256>, Erro
     }
 }
 
+/// Combine one accumulator byte with one data byte via the half-nibble
+/// table lookup and XOR.  Uses `get(...).copied().unwrap_or(0)` for the
+/// table reads: the nibble mask guarantees the index lies in `0..16`,
+/// and `0` is the identity for XOR so an out-of-range read would leave
+/// the accumulator byte unchanged rather than panic.
+#[inline]
+fn mix_byte(a: Gf256, b: Gf256, low: &[u8; 16], high: &[u8; 16]) -> Gf256 {
+    let bv = b.value();
+    let lo_idx = usize::from(bv & 0x0F);
+    let hi_idx = usize::from(bv >> 4);
+    let lo = low.get(lo_idx).copied().unwrap_or(0);
+    let hi = high.get(hi_idx).copied().unwrap_or(0);
+    Gf256::new(a.value() ^ lo ^ hi)
+}
+
 /// Compute the 16-byte half-nibble multiplication tables for `scalar`.
-#[allow(clippy::cast_possible_truncation)]
 fn half_nibble_tables(scalar: Gf256) -> ([u8; 16], [u8; 16]) {
-    let low: [u8; 16] = core::array::from_fn(|i| (scalar * Gf256::new(i as u8)).value());
-    let high: [u8; 16] =
-        core::array::from_fn(|i| (scalar * Gf256::new((i as u8) << 4)).value());
+    let low: [u8; 16] = core::array::from_fn(|i| {
+        let nibble = u8::try_from(i).unwrap_or(0);
+        (scalar * Gf256::new(nibble)).value()
+    });
+    let high: [u8; 16] = core::array::from_fn(|i| {
+        let nibble = u8::try_from(i).unwrap_or(0);
+        (scalar * Gf256::new(nibble << 4)).value()
+    });
     (low, high)
 }
 
