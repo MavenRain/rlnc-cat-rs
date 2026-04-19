@@ -2,13 +2,13 @@
 
 Random Linear Network Coding over GF(2^8), built on [comp-cat-rs](https://github.com/MavenRain/comp-cat-rs).
 
-Unlike Reed-Solomon codes, RLNC allows recovery from *any* k linearly independent coded pieces out of n total, making it ideal for lossy networks, multicast, peer-to-peer distribution, and distributed storage.  Intermediate nodes can recode without decoding.
+Unlike Reed-Solomon codes, RLNC allows recovery from *any* k linearly independent coded pieces out of n total, making it ideal for lossy networks, multicast, peer-to-peer distribution, and distributed storage.  Intermediate nodes can recode without decoding, and recoded pieces can be cryptographically authenticated without the source's secret key via a lattice-based linearly homomorphic signature scheme.
 
 ## Installation
 
 ```toml
 [dependencies]
-rlnc-cat-rs = "0.1"
+rlnc-cat-rs = "0.2"
 ```
 
 ## Quick start
@@ -53,6 +53,11 @@ assert_eq!(recovered, data);
 field/      GF(2^8) finite field arithmetic (Gf256, log/exp tables)
 vector/     Immutable vectors (GfVec), matrices (GfMatrix), Gaussian elimination
 coding/     The three RLNC operations: encode, decode, recode
+auth/       Authenticator trait (Null, KeyedHash)
+lattice/    Z/QZ + Z arithmetic, discrete Gaussian, Klein preimage
+lhs/        BFKW09 lattice-based linearly homomorphic signatures
+gossip/     Source / relay / receive combinators for RLNC distribution
+transport/  In-memory network for pipeline tests
 error/      Single project-wide Error enum
 ```
 
@@ -148,6 +153,42 @@ assert_eq!(state.decode()?, data);
 # Ok::<(), rlnc_cat_rs::error::Error>(())
 ```
 
+## Authenticated recoding
+
+A recoding relay produces new coded pieces without the source's secret key.  The flip side: any authenticator on these pieces must tolerate on-the-fly linear mixing, so a MAC or signature that verifies on the inputs must still verify on a `Zq`-linear combination of them.
+
+The `lhs` module provides a lattice-based linearly homomorphic signature scheme (BFKW09-style, with Klein/Gaussian preimage sampling) that satisfies this.  A source signs each original piece; a relay holding only the public key and the k piece-signatures can re-authenticate any recoded piece by combining the signatures with the same coefficients.
+
+```rust
+use rlnc_cat_rs::lhs::{LhsParams, keygen, LatticeHomomorphicAuthenticator};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+// Parameters: modulus Q=97, n=4, m0=4, k_pieces=3,
+// signature norm bound β²=10_000_000, Gaussian width σ_g=3.0.
+let params = LhsParams::<97>::new(4, 4, 3, 10_000_000, 3.0)?;
+
+// Inject randomness as a closure `Fn(usize) -> Result<Vec<u8>, Error>`;
+// production code wires in a real CSPRNG (`OsRng`, `getrandom`, ...).
+let counter = AtomicU64::new(1);
+let rng = |n: usize| {
+    let bytes: Vec<u8> = (0..n.div_ceil(8))
+        .flat_map(|_| counter.fetch_add(1, Ordering::Relaxed).to_le_bytes())
+        .take(n)
+        .collect();
+    Ok::<_, rlnc_cat_rs::error::Error>(bytes)
+};
+
+let (pk, sk) = keygen(params, &rng)?;
+
+// An authenticator is bound to a generation identifier (e.g. hash of the data).
+let metadata = b"generation-id";
+let auth = LatticeHomomorphicAuthenticator::new(pk, &sk, metadata, &rng)?;
+# let _ = auth;
+# Ok::<(), rlnc_cat_rs::error::Error>(())
+```
+
+`gossip::relay_fanout` threads this authenticator through the relay so intermediate nodes can re-tag recoded pieces without the secret key.
+
 ## Randomness
 
 This crate has no `rand` dependency.  Randomness is injected as a closure:
@@ -205,7 +246,7 @@ assert_eq!(quotient.map(|q| q * b), Ok(a));
 | Full immutability | Every matrix row op returns a new `GfMatrix`.  Correctness first; for typical k <= 256 the allocation cost is negligible. |
 | No `core::ops::Div` for `Gf256` | The trait signature cannot express division-by-zero failure, and panic is forbidden. |
 | No `dyn` in public API | Static dispatch everywhere; `dyn` appears only internally at the comp-cat-rs `Stream::unfold`/`fold` boundary. |
-| Scalar GF(2^8) only | SIMD (NEON, AVX2, GFNI) deferred to v0.2 behind a feature flag. |
+| Scalar GF(2^8) only | SIMD (NEON, AVX2, GFNI) is planned behind a future feature flag; scalar correctness came first. |
 
 ## License
 
