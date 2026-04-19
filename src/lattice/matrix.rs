@@ -4,7 +4,7 @@
 //! operations needed by the BFKW09 homomorphic-signature scheme live
 //! here: construction, entry access, matrix-vector multiplication,
 //! and uniform sampling.  Matrix-matrix multiplication and
-//! factorizations are deliberately out of scope for v0.1.
+//! factorizations are deliberately out of scope at this stage.
 
 use crate::error::Error;
 use crate::lattice::vector::ZqVec;

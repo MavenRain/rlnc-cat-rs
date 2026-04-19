@@ -9,7 +9,7 @@
 //! The sampler relies on `f64` arithmetic for the exponential; it is
 //! therefore not constant-time and is **not** suitable for production
 //! side-channel-resistant deployments.  It is algebraically correct
-//! and sufficient for the v0.1 correctness goals of this crate.
+//! and sufficient for the correctness goals of this crate.
 
 use crate::error::Error;
 

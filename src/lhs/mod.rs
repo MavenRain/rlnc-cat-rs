@@ -35,13 +35,13 @@
 //!
 //! # Status
 //!
-//! This is a correctness-oriented v0.2 that upgrades the deterministic
-//! gadget preimage to Klein/Gaussian sampling over the kernel lattice
-//! `Λ^⊥_q(G)`, achieving BFKW09 statistical closeness to the ideal
-//! discrete Gaussian.  The Klein sampler uses `f64` Gram-Schmidt and is
-//! therefore not constant-time; this module is suitable for unit tests
-//! and gossip-layer integration, not production side-channel-resistant
-//! deployments.
+//! This is a correctness-oriented release.  `sign` uses Klein/Gaussian
+//! sampling over the kernel lattice `Λ^⊥_q(G)` so that signatures are
+//! statistically close to the discrete Gaussian on the target coset
+//! (BFKW09 / Gentry-Peikert).  The Klein sampler uses `f64` Gram-
+//! Schmidt and is therefore not constant-time; this module is suitable
+//! for unit tests and gossip-layer integration, not production
+//! side-channel-resistant deployments.
 
 mod authenticator;
 mod gadget;

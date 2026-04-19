@@ -15,7 +15,7 @@
 //! All arithmetic inside the orthogonalization and the nearest-plane
 //! backward pass uses `f64`.  This is correct for small bases but
 //! suffers precision loss on long bases; Nguyen-Regev (2006) broke
-//! `NTRUSign` by exploiting exactly this effect.  v0.1 is for
+//! `NTRUSign` by exploiting exactly this effect.  This crate targets
 //! correctness, not production side-channel resistance.
 
 use crate::error::Error;
