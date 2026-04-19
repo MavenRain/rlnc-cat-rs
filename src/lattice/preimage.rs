@@ -69,6 +69,8 @@ impl PreimageContext {
                     .unwrap_or(&[])
                     .iter()
                     .map(|&x| {
+                        // i64 -> f64 loses precision beyond 2^53; bases used
+                        // here are small-entry integer matrices.
                         #[allow(clippy::cast_precision_loss)]
                         let v = x as f64;
                         v
@@ -222,8 +224,12 @@ fn babai_nearest_plane(
     let (_final_t, zs_rev) = (0..basis.rows()).rev().fold(
         (target.to_vec(), Vec::<i64>::new()),
         |(t, zs), i| {
-            let ip: f64 = t.iter().zip(gs[i].iter()).map(|(a, b)| a * b).sum();
-            let mu = ip * gs_inv_norm_sq[i];
+            let gs_row = gs.get(i).map_or(&[][..], Vec::as_slice);
+            let inv_norm_sq = gs_inv_norm_sq.get(i).copied().unwrap_or(0.0);
+            let ip: f64 = t.iter().zip(gs_row.iter()).map(|(a, b)| a * b).sum();
+            let mu = ip * inv_norm_sq;
+            // f64 -> i64 saturating cast; mu is bounded by the lattice
+            // coefficient scale (far below i64::MAX in well-posed bases).
             #[allow(clippy::cast_possible_truncation)]
             let z = mu.round() as i64;
             let new_t = subtract_scaled_row(&t, basis, i, z);
@@ -257,9 +263,12 @@ where
         .try_fold(
             (target.to_vec(), Vec::<i64>::new()),
             |(t, zs), i| {
-                let ip: f64 = t.iter().zip(gs[i].iter()).map(|(a, b)| a * b).sum();
-                let mu = ip * gs_inv_norm_sq[i];
-                let sigma_i = sigma * gs_inv_norm[i];
+                let gs_row = gs.get(i).map_or(&[][..], Vec::as_slice);
+                let inv_norm_sq = gs_inv_norm_sq.get(i).copied().unwrap_or(0.0);
+                let inv_norm = gs_inv_norm.get(i).copied().unwrap_or(0.0);
+                let ip: f64 = t.iter().zip(gs_row.iter()).map(|(a, b)| a * b).sum();
+                let mu = ip * inv_norm_sq;
+                let sigma_i = sigma * inv_norm;
                 discrete_gaussian(sigma_i, mu, rng).map(|z| {
                     let new_t = subtract_scaled_row(&t, basis, i, z);
                     let new_zs: Vec<i64> =
@@ -277,6 +286,8 @@ where
 /// Compute `t - z · basis[i]` element-wise in f64.
 fn subtract_scaled_row(t: &[f64], basis: &ZMatrix, i: usize, z: i64) -> Vec<f64> {
     let row = basis.row(i).unwrap_or(&[]);
+    // i64 -> f64 loses precision beyond 2^53; lattice coefficients stay
+    // well inside that bound for bases sized for signature use.
     #[allow(clippy::cast_precision_loss)]
     let zf = z as f64;
     t.iter()

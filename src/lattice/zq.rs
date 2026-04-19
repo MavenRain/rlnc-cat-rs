@@ -65,11 +65,9 @@ impl<const Q: u32> Zq<Q> {
     /// `v - Q` so the result is the lift closer to zero.  Used for L2
     /// norm computations in lattice verification.
     #[must_use]
-    pub const fn signed_repr(self) -> i64 {
-        #[allow(clippy::cast_possible_wrap)]
-        let v = self.0 as i64;
-        #[allow(clippy::cast_possible_wrap)]
-        let q = Q as i64;
+    pub fn signed_repr(self) -> i64 {
+        let v = i64::from(self.0);
+        let q = i64::from(Q);
         if v * 2 > q { v - q } else { v }
     }
 
@@ -133,26 +131,26 @@ impl<const Q: u32> From<u32> for Zq<Q> {
 
 impl<const Q: u32> Add for Zq<Q> {
     type Output = Self;
-    #[allow(clippy::cast_possible_truncation)]
     fn add(self, rhs: Self) -> Self {
-        Self(((u64::from(self.0) + u64::from(rhs.0)) % u64::from(Q)) as u32)
+        let r = (u64::from(self.0) + u64::from(rhs.0)) % u64::from(Q);
+        Self(u32::try_from(r).unwrap_or(0))
     }
 }
 
 impl<const Q: u32> Sub for Zq<Q> {
     type Output = Self;
-    #[allow(clippy::cast_possible_truncation)]
     fn sub(self, rhs: Self) -> Self {
         let q = u64::from(Q);
-        Self(((u64::from(self.0) + q - u64::from(rhs.0)) % q) as u32)
+        let r = (u64::from(self.0) + q - u64::from(rhs.0)) % q;
+        Self(u32::try_from(r).unwrap_or(0))
     }
 }
 
 impl<const Q: u32> Mul for Zq<Q> {
     type Output = Self;
-    #[allow(clippy::cast_possible_truncation)]
     fn mul(self, rhs: Self) -> Self {
-        Self(((u64::from(self.0) * u64::from(rhs.0)) % u64::from(Q)) as u32)
+        let r = (u64::from(self.0) * u64::from(rhs.0)) % u64::from(Q);
+        Self(u32::try_from(r).unwrap_or(0))
     }
 }
 

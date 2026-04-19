@@ -132,7 +132,7 @@ impl ZVec {
                     let entries = (0..dim)
                         .map(|i| {
                             scalars.iter().zip(vecs.iter()).fold(0i64, |acc, (&s, v)| {
-                                acc + s * v.entries[i]
+                                acc + s * v.entries.get(i).copied().unwrap_or(0)
                             })
                         })
                         .collect();
@@ -161,8 +161,7 @@ impl ZVec {
             .iter()
             .map(|&x| {
                 let s = i128::from(x);
-                #[allow(clippy::cast_sign_loss)]
-                ((s * s) as u128)
+                u128::try_from(s * s).unwrap_or(0)
             })
             .sum()
     }
@@ -178,9 +177,7 @@ impl ZVec {
             .iter()
             .map(|&x| {
                 let r = x.rem_euclid(i64::from(Q));
-                #[allow(clippy::cast_possible_truncation)]
-                #[allow(clippy::cast_sign_loss)]
-                Zq::<Q>::new(r as u32)
+                Zq::<Q>::new(u32::try_from(r).unwrap_or(0))
             })
             .collect();
         ZqVec::new(entries)
@@ -248,13 +245,15 @@ impl ZMatrix {
     /// The entry at `(row, col)` if in bounds.
     #[must_use]
     pub fn entry(&self, row: usize, col: usize) -> Option<i64> {
-        (row < self.rows && col < self.cols).then(|| self.data[row * self.cols + col])
+        self.data.get(row * self.cols + col).copied().filter(|_| col < self.cols && row < self.rows)
     }
 
     /// A borrowed slice covering row `row`, if in bounds.
     #[must_use]
     pub fn row(&self, row: usize) -> Option<&[i64]> {
-        (row < self.rows).then(|| &self.data[row * self.cols..(row + 1) * self.cols])
+        (row < self.rows)
+            .then(|| self.data.get(row * self.cols..(row + 1) * self.cols))
+            .flatten()
     }
 
     /// Multiply by an integer column vector.
@@ -267,7 +266,9 @@ impl ZMatrix {
             let entries = (0..self.rows)
                 .map(|i| {
                     (0..self.cols).fold(0i64, |acc, j| {
-                        acc + self.data[i * self.cols + j] * v.entries()[j]
+                        let a = self.data.get(i * self.cols + j).copied().unwrap_or(0);
+                        let b = v.entries().get(j).copied().unwrap_or(0);
+                        acc + a * b
                     })
                 })
                 .collect();
@@ -287,9 +288,7 @@ impl ZMatrix {
             .iter()
             .map(|&x| {
                 let r = x.rem_euclid(i64::from(Q));
-                #[allow(clippy::cast_possible_truncation)]
-                #[allow(clippy::cast_sign_loss)]
-                Zq::<Q>::new(r as u32)
+                Zq::<Q>::new(u32::try_from(r).unwrap_or(0))
             })
             .collect();
         ZqMatrix::new(self.rows, self.cols, data)

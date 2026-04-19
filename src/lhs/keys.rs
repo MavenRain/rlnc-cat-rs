@@ -214,7 +214,10 @@ fn build_a1<const Q: u32>(
         .flat_map(|i| (0..g_width).map(move |j| (i, j)))
         .map(|(i, j)| {
             let g_ij = gadget_entry::<Q>(i, j);
-            let a0r_ij = cols[j].entries()[i];
+            let a0r_ij = cols
+                .get(j)
+                .and_then(|col| col.entries().get(i).copied())
+                .unwrap_or_else(Zq::zero);
             g_ij - a0r_ij
         })
         .collect();

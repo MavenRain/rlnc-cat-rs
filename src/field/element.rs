@@ -78,8 +78,8 @@ impl Gf256 {
         if self.is_zero() {
             Err(Error::DivisionByZero)
         } else {
-            let log_a = LOG_TABLE[self.0 as usize] as usize;
-            Ok(Self(EXP_TABLE[255 - log_a]))
+            let log_a = usize::from(LOG_TABLE.get(usize::from(self.0)).copied().unwrap_or(0));
+            Ok(Self(EXP_TABLE.get(255 - log_a).copied().unwrap_or(0)))
         }
     }
 
@@ -131,9 +131,9 @@ impl Mul for Gf256 {
         if self.is_zero() || rhs.is_zero() {
             Self::zero()
         } else {
-            let log_a = LOG_TABLE[self.0 as usize] as usize;
-            let log_b = LOG_TABLE[rhs.0 as usize] as usize;
-            Self(EXP_TABLE[log_a + log_b])
+            let log_a = usize::from(LOG_TABLE.get(usize::from(self.0)).copied().unwrap_or(0));
+            let log_b = usize::from(LOG_TABLE.get(usize::from(rhs.0)).copied().unwrap_or(0));
+            Self(EXP_TABLE.get(log_a + log_b).copied().unwrap_or(0))
         }
     }
 }

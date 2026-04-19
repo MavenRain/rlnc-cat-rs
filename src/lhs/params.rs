@@ -106,10 +106,8 @@ impl<const Q: u32> LhsParams<Q> {
     /// Gadget width per ambient coordinate: the number of bits needed
     /// to represent an element of `Z/QZ`.  Equal to `⌈log₂ Q⌉`.
     #[must_use]
-    pub const fn k_gadget() -> usize {
-        #[allow(clippy::cast_possible_truncation)]
-        let bits = (Q - 1).ilog2() as usize + 1;
-        bits
+    pub fn k_gadget() -> usize {
+        usize::try_from((Q - 1).ilog2()).unwrap_or(0) + 1
     }
 
     /// Total gadget-block width `n · k_gadget`.

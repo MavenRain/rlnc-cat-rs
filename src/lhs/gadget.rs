@@ -32,8 +32,7 @@ pub fn gadget_preimage<const Q: u32>(u: &ZqVec<Q>) -> Vec<i64> {
         .flat_map(|z| {
             let v = z.value();
             (0..k).map(move |j| {
-                #[allow(clippy::cast_possible_truncation)]
-                let shift = j as u32;
+                let shift = u32::try_from(j).unwrap_or(0);
                 i64::from((v >> shift) & 1)
             })
         })
@@ -75,8 +74,7 @@ pub fn gadget_entry<const Q: u32>(i: usize, j: usize) -> Zq<Q> {
     let k = LhsParams::<Q>::k_gadget();
     if j / k == i {
         let bit = j % k;
-        #[allow(clippy::cast_possible_truncation)]
-        let shift = bit as u32;
+        let shift = u32::try_from(bit).unwrap_or(0);
         reduce_u64::<Q>(1u64 << shift)
     } else {
         Zq::<Q>::zero()
@@ -84,8 +82,7 @@ pub fn gadget_entry<const Q: u32>(i: usize, j: usize) -> Zq<Q> {
 }
 
 fn reduce_u64<const Q: u32>(v: u64) -> Zq<Q> {
-    #[allow(clippy::cast_possible_truncation)]
-    let r = (v % u64::from(Q)) as u32;
+    let r = u32::try_from(v % u64::from(Q)).unwrap_or(0);
     Zq::<Q>::new(r)
 }
 

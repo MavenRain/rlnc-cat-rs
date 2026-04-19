@@ -81,7 +81,9 @@ impl<const Q: u32> ZqVec<Q> {
                         .map(|i| {
                             scalars.iter().zip(vecs.iter()).fold(
                                 Zq::<Q>::zero(),
-                                |acc, (&s, v)| acc + s * v.entries[i],
+                                |acc, (&s, v)| {
+                                    acc + s * v.entries.get(i).copied().unwrap_or(Zq::zero())
+                                },
                             )
                         })
                         .collect();
@@ -143,8 +145,7 @@ impl<const Q: u32> ZqVec<Q> {
             .iter()
             .map(|z| {
                 let s = i128::from(z.signed_repr());
-                #[allow(clippy::cast_sign_loss)]
-                ((s * s) as u128)
+                u128::try_from(s * s).unwrap_or(0)
             })
             .sum()
     }

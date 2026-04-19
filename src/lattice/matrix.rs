@@ -74,7 +74,9 @@ impl<const Q: u32> ZqMatrix<Q> {
     /// The entry at `(row, col)`, if in bounds.
     #[must_use]
     pub fn entry(&self, row: usize, col: usize) -> Option<Zq<Q>> {
-        (row < self.rows && col < self.cols).then(|| self.data[row * self.cols + col])
+        (col < self.cols)
+            .then(|| self.data.get(row * self.cols + col).copied())
+            .flatten()
     }
 
     /// Multiply this matrix by a column vector.
@@ -87,7 +89,9 @@ impl<const Q: u32> ZqMatrix<Q> {
             let entries = (0..self.rows)
                 .map(|i| {
                     (0..self.cols).fold(Zq::<Q>::zero(), |acc, j| {
-                        acc + self.data[i * self.cols + j] * v.entries()[j]
+                        let a = self.data.get(i * self.cols + j).copied().unwrap_or(Zq::zero());
+                        let b = v.entries().get(j).copied().unwrap_or(Zq::zero());
+                        acc + a * b
                     })
                 })
                 .collect();

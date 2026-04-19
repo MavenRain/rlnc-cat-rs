@@ -40,12 +40,12 @@ where
         let tail = TAIL_SIGMAS * sigma;
         let low_f = (center - tail).floor();
         let high_f = (center + tail).ceil();
+        // f64 -> i64 saturating cast; bounded by sigma validation above.
         #[allow(clippy::cast_possible_truncation)]
         let low = low_f as i64;
         #[allow(clippy::cast_possible_truncation)]
         let high = high_f as i64;
-        #[allow(clippy::cast_sign_loss)]
-        let range = (high - low + 1).max(1) as u64;
+        let range = u64::try_from((high - low + 1).max(1)).unwrap_or(1);
         let denom = 2.0 * sigma * sigma;
         sample_step(rng, low, range, center, denom, RETRY_BUDGET)
     }
@@ -89,11 +89,14 @@ where
 {
     read_u64(rng).and_then(|proposal_u64| {
         read_u64(rng).map(|accept_u64| {
-            #[allow(clippy::cast_possible_wrap)]
-            let x = low + (proposal_u64 % range) as i64;
-            // 53-bit uniform on [0, 1).
+            let offset = i64::try_from(proposal_u64 % range).unwrap_or(0);
+            let x = low + offset;
+            // 53-bit uniform on [0, 1): `>> 11` drops the low bits so the
+            // u64 fits exactly in f64's 53-bit mantissa.
             #[allow(clippy::cast_precision_loss)]
             let u = (accept_u64 >> 11) as f64 / ((1u64 << 53) as f64);
+            // i64 -> f64 is lossy for |x| >= 2^53 but the sampler bound
+            // is 12 * sigma, far below that threshold in practice.
             #[allow(clippy::cast_precision_loss)]
             let delta = x as f64 - center;
             let accept_prob = (-delta * delta / denom).exp();

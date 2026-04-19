@@ -154,7 +154,8 @@ where
         .map(|i| {
             let start = i * k;
             let end = start + k;
-            randomize_block(&w_0[start..end], ctx, sigma_g, rng)
+            let block = w_0.get(start..end).unwrap_or(&[]);
+            randomize_block(block, ctx, sigma_g, rng)
         })
         .collect::<Result<Vec<Vec<i64>>, Error>>()
         .map(|blocks| blocks.into_iter().flatten().collect())

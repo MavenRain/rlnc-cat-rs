@@ -249,9 +249,9 @@ impl OriginalData {
             .rposition(|&b| b == BOUNDARY_MARKER)
             .filter(|&pos| {
                 // Everything after the marker must be zero
-                concatenated[pos + 1..].iter().all(|&b| b == 0)
+                concatenated.get(pos + 1..).unwrap_or(&[]).iter().all(|&b| b == 0)
             })
-            .map(|pos| concatenated[..pos].to_vec())
+            .map(|pos| concatenated.get(..pos).unwrap_or(&[]).to_vec())
             .ok_or(Error::InvalidPadding)
     }
 }

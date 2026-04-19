@@ -132,28 +132,26 @@ impl GfMatrix {
     /// O(rows) refcount bumps; no row bytes are copied.
     #[must_use]
     pub fn with_rows_swapped(&self, i: usize, j: usize) -> Option<Self> {
-        if i >= self.rows.len() || j >= self.rows.len() {
-            None
-        } else {
-            let new_rows: Vec<Arc<GfVec>> = self
-                .rows
-                .iter()
-                .enumerate()
-                .map(|(idx, row)| {
-                    if idx == i {
-                        Arc::clone(&self.rows[j])
-                    } else if idx == j {
-                        Arc::clone(&self.rows[i])
-                    } else {
-                        Arc::clone(row)
-                    }
-                })
-                .collect();
-            Some(Self {
-                rows: new_rows,
-                col_count: self.col_count,
+        self.rows
+            .get(i)
+            .cloned()
+            .zip(self.rows.get(j).cloned())
+            .map(|(row_i, row_j)| {
+                let new_rows: Vec<Arc<GfVec>> = self
+                    .rows
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, row)| match () {
+                        () if idx == i => Arc::clone(&row_j),
+                        () if idx == j => Arc::clone(&row_i),
+                        () => Arc::clone(row),
+                    })
+                    .collect();
+                Self {
+                    rows: new_rows,
+                    col_count: self.col_count,
+                }
             })
-        }
     }
 
     /// Scale a row by a scalar, returning a new matrix.
@@ -162,10 +160,8 @@ impl GfMatrix {
     /// storage via `Arc`.  Returns `None` if the index is out of bounds.
     #[must_use]
     pub fn with_row_scaled(&self, index: usize, scalar: Gf256) -> Option<Self> {
-        if index >= self.rows.len() {
-            None
-        } else {
-            let scaled = Arc::new(self.rows[index].scale(scalar));
+        self.rows.get(index).map(|target_row| {
+            let scaled = Arc::new(target_row.scale(scalar));
             let new_rows: Vec<Arc<GfVec>> = self
                 .rows
                 .iter()
@@ -178,11 +174,11 @@ impl GfMatrix {
                     }
                 })
                 .collect();
-            Some(Self {
+            Self {
                 rows: new_rows,
                 col_count: self.col_count,
-            })
-        }
+            }
+        })
     }
 
     /// Add `scalar * row[source]` to `row[target]`, returning a new matrix.
@@ -200,15 +196,13 @@ impl GfMatrix {
         source: usize,
         scalar: Gf256,
     ) -> Option<Self> {
-        if target >= self.rows.len() || source >= self.rows.len() {
-            None
-        } else {
-            // mac can only fail on dimension mismatch, which cannot
-            // happen here since all rows have the same length.
-            self.rows[target]
-                .mac(&self.rows[source], scalar)
-                .ok()
-                .map(|new_target| {
+        // mac can only fail on dimension mismatch, which cannot
+        // happen here since all rows have the same length.
+        self.rows
+            .get(target)
+            .zip(self.rows.get(source))
+            .and_then(|(target_row, source_row)| {
+                target_row.mac(source_row, scalar).ok().map(|new_target| {
                     let new_target_arc = Arc::new(new_target);
                     let new_rows: Vec<Arc<GfVec>> = self
                         .rows
@@ -227,7 +221,7 @@ impl GfMatrix {
                         col_count: self.col_count,
                     }
                 })
-        }
+            })
     }
 
     /// Split the matrix at the given column, returning (left, right).
