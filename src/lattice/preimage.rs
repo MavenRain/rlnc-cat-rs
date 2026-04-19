@@ -29,9 +29,10 @@ const GS_MIN_NORM_SQ: f64 = 1e-10;
 
 /// Precomputed state for preimage sampling on a fixed integer lattice.
 ///
-/// Caches the Gram-Schmidt orthogonalization of the basis rows so that
-/// many nearest-plane or Gaussian-preimage queries can share the same
-/// f64 linear-algebra work.
+/// Caches the Gram-Schmidt orthogonalization of the basis rows along
+/// with `1/||b*_i||²` and `1/||b*_i||` so that nearest-plane and
+/// Klein sampling traverse the backward pass using only multiplies,
+/// without recomputing the per-row `sqrt` or division on each query.
 ///
 /// # Examples
 ///
@@ -47,7 +48,8 @@ const GS_MIN_NORM_SQ: f64 = 1e-10;
 pub struct PreimageContext {
     basis: ZMatrix,
     gs: Vec<Vec<f64>>,
-    gs_norms_sq: Vec<f64>,
+    gs_inv_norm: Vec<f64>,
+    gs_inv_norm_sq: Vec<f64>,
 }
 
 impl PreimageContext {
@@ -81,10 +83,15 @@ impl PreimageContext {
             .find_map(|(i, &ns)| (ns < GS_MIN_NORM_SQ).then_some((i, ns)))
             .map_or_else(
                 || {
+                    let gs_inv_norm_sq: Vec<f64> =
+                        gs_norms_sq.iter().map(|&n| 1.0 / n).collect();
+                    let gs_inv_norm: Vec<f64> =
+                        gs_inv_norm_sq.iter().map(|&inv| inv.sqrt()).collect();
                     Ok(Self {
                         basis,
                         gs,
-                        gs_norms_sq,
+                        gs_inv_norm,
+                        gs_inv_norm_sq,
                     })
                 },
                 |(i, ns)| {
@@ -125,7 +132,7 @@ impl PreimageContext {
                 target,
                 &self.basis,
                 &self.gs,
-                &self.gs_norms_sq,
+                &self.gs_inv_norm_sq,
             ))
         } else {
             Err(Error::DimensionMismatch {
@@ -160,7 +167,8 @@ impl PreimageContext {
                 sigma,
                 &self.basis,
                 &self.gs,
-                &self.gs_norms_sq,
+                &self.gs_inv_norm,
+                &self.gs_inv_norm_sq,
                 rng,
             )
         } else {
@@ -201,18 +209,21 @@ fn orthogonalize(bi: &[f64], prev_gs: &[Vec<f64>], prev_norms: &[f64]) -> Vec<f6
 }
 
 /// Babai's nearest-plane: iterate `i` from `m-1` down to `0`, choosing
-/// `z_i = round(<t_i, b*_i> / ||b*_i||²)` and updating `t_{i-1} = t_i - z_i b_i`.
+/// `z_i = round(<t_i, b*_i> · (1/||b*_i||²))` and updating
+/// `t_{i-1} = t_i - z_i b_i`.  The inverse squared norms come
+/// precomputed from [`PreimageContext`] so the backward pass is
+/// division-free.
 fn babai_nearest_plane(
     target: &[f64],
     basis: &ZMatrix,
     gs: &[Vec<f64>],
-    gs_norms_sq: &[f64],
+    gs_inv_norm_sq: &[f64],
 ) -> ZVec {
     let (_final_t, zs_rev) = (0..basis.rows()).rev().fold(
         (target.to_vec(), Vec::<i64>::new()),
         |(t, zs), i| {
             let ip: f64 = t.iter().zip(gs[i].iter()).map(|(a, b)| a * b).sum();
-            let mu = ip / gs_norms_sq[i];
+            let mu = ip * gs_inv_norm_sq[i];
             #[allow(clippy::cast_possible_truncation)]
             let z = mu.round() as i64;
             let new_t = subtract_scaled_row(&t, basis, i, z);
@@ -226,13 +237,16 @@ fn babai_nearest_plane(
 
 /// Klein's algorithm: same backward pass as Babai, but `z_i` is drawn
 /// from a discrete Gaussian on `Z` centered at the projection
-/// coefficient with width `σ / ||b*_i||`.
+/// coefficient with width `σ · (1/||b*_i||)`.  The precomputed inverse
+/// norms turn the per-step `sigma / ||b*_i||` and `ip / ||b*_i||²` into
+/// bare multiplies.
 fn klein_sample<F>(
     target: &[f64],
     sigma: f64,
     basis: &ZMatrix,
     gs: &[Vec<f64>],
-    gs_norms_sq: &[f64],
+    gs_inv_norm: &[f64],
+    gs_inv_norm_sq: &[f64],
     rng: &F,
 ) -> Result<ZVec, Error>
 where
@@ -244,8 +258,8 @@ where
             (target.to_vec(), Vec::<i64>::new()),
             |(t, zs), i| {
                 let ip: f64 = t.iter().zip(gs[i].iter()).map(|(a, b)| a * b).sum();
-                let mu = ip / gs_norms_sq[i];
-                let sigma_i = sigma / gs_norms_sq[i].sqrt();
+                let mu = ip * gs_inv_norm_sq[i];
+                let sigma_i = sigma * gs_inv_norm[i];
                 discrete_gaussian(sigma_i, mu, rng).map(|z| {
                     let new_t = subtract_scaled_row(&t, basis, i, z);
                     let new_zs: Vec<i64> =
@@ -327,9 +341,11 @@ mod tests {
     fn gram_schmidt_of_identity_is_identity() {
         let ctx = PreimageContext::new(identity_basis(2)).ok();
         let gs = ctx.as_ref().map(|c| c.gs.clone());
-        let norms = ctx.as_ref().map(|c| c.gs_norms_sq.clone());
+        let inv_norm_sq = ctx.as_ref().map(|c| c.gs_inv_norm_sq.clone());
+        let inv_norm = ctx.as_ref().map(|c| c.gs_inv_norm.clone());
         assert_eq!(gs, Some(vec![vec![1.0, 0.0], vec![0.0, 1.0]]));
-        assert_eq!(norms, Some(vec![1.0, 1.0]));
+        assert_eq!(inv_norm_sq, Some(vec![1.0, 1.0]));
+        assert_eq!(inv_norm, Some(vec![1.0, 1.0]));
     }
 
     #[test]
