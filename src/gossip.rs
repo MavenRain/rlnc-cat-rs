@@ -631,9 +631,15 @@ mod tests {
     const LHS_TEST_METADATA: &[u8] = b"gossip-test-generation";
 
     fn build_lhs_auth(seed: usize) -> Option<LatticeHomomorphicAuthenticator<97>> {
-        let params = LhsParams::<97>::new(2, 2, 4, 100_000_000).ok()?;
+        let params = LhsParams::<97>::new(2, 2, 4, 100_000_000, 3.0).ok()?;
         let (pk, sk) = keygen(params, &keygen_rng(seed)).ok()?;
-        LatticeHomomorphicAuthenticator::new(pk, &sk, LHS_TEST_METADATA).ok()
+        LatticeHomomorphicAuthenticator::new(
+            pk,
+            &sk,
+            LHS_TEST_METADATA,
+            &keygen_rng(seed.wrapping_add(1)),
+        )
+        .ok()
     }
 
     #[test]

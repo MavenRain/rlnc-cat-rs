@@ -116,27 +116,33 @@ impl<const Q: u32> LatticeHomomorphicAuthenticator<Q> {
     /// Build an authenticator at the source side.
     ///
     /// Derives `params.k_pieces()` hash targets from `metadata`, signs
-    /// each of them with `sk`, and caches the resulting `σ_i`.  After
-    /// this call, tagging and verification use only `pk`, `metadata`,
-    /// and the cached signatures.
+    /// each of them with `sk` using `rng` to drive the Klein preimage
+    /// sampler, and caches the resulting `σ_i`.  After this call,
+    /// tagging and verification use only `pk`, `metadata`, and the
+    /// cached signatures.
     ///
     /// # Errors
     ///
-    /// - Propagates any error returned by [`sign`] (unreachable for
-    ///   keys that came from a successful [`keygen`] call).
+    /// - Propagates any error returned by [`sign`] (including
+    ///   [`Error::RandomGenerationFailed`] from the Klein sampler or
+    ///   a dimension mismatch for malformed keys).
     ///
     /// [`keygen`]: crate::lhs::keygen
-    pub fn new(
+    pub fn new<F>(
         pk: PublicKey<Q>,
         sk: &SecretKey<Q>,
         metadata: &[u8],
-    ) -> Result<Self, Error> {
+        rng: &F,
+    ) -> Result<Self, Error>
+    where
+        F: Fn(usize) -> Result<Vec<u8>, Error>,
+    {
         let k = pk.params().k_pieces();
         let n = pk.params().n();
         let hash_targets = derive_hash_targets::<Q>(metadata, k, n);
         hash_targets
             .iter()
-            .map(|target| sign(&pk, sk, target))
+            .map(|target| sign(&pk, sk, target, rng))
             .collect::<Result<Vec<Signature>, Error>>()
             .map(|signed_originals| {
                 let commitment = derive_commitment(&pk, metadata, &signed_originals);
@@ -375,7 +381,7 @@ mod tests {
     }
 
     fn unreachable_params<const Q: u32>() -> LhsParams<Q> {
-        LhsParams::<Q>::new(1, 1, 1, 1)
+        LhsParams::<Q>::new(1, 1, 1, 1, 1.0)
             .ok()
             .unwrap_or_else(unreachable_params)
     }
@@ -384,11 +390,13 @@ mod tests {
         seed: usize,
         metadata: &[u8],
     ) -> Option<LatticeHomomorphicAuthenticator<97>> {
-        let params = LhsParams::<97>::new(2, 2, 4, 100_000_000)
+        let params = LhsParams::<97>::new(2, 2, 4, 100_000_000, 3.0)
             .ok()
             .unwrap_or_else(unreachable_params);
         let keys = keygen(params, &counter_rng(seed)).ok();
-        keys.and_then(|(pk, sk)| LatticeHomomorphicAuthenticator::new(pk, &sk, metadata).ok())
+        keys.and_then(|(pk, sk)| {
+            LatticeHomomorphicAuthenticator::new(pk, &sk, metadata, &counter_rng(seed.wrapping_add(1))).ok()
+        })
     }
 
     fn sample_auth_with_seed(seed: usize) -> Option<LatticeHomomorphicAuthenticator<97>> {

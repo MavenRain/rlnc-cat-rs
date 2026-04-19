@@ -1,8 +1,9 @@
 //! Scheme parameters for the BF11-style linearly homomorphic signature.
 //!
-//! [`LhsParams`] packages the dimensional constants and verification
-//! norm bound that must be known by every KeyGen/Sign/Verify caller.
-//! The modulus `Q` is a const generic and the gadget width `k_gadget`
+//! [`LhsParams`] packages the dimensional constants, the Gaussian width
+//! `σ_g` used by the Klein preimage sampler, and the verification norm
+//! bound that must be known by every KeyGen/Sign/Verify caller.  The
+//! modulus `Q` is a const generic and the gadget width `k_gadget`
 //! derives from it at compile time via `(Q - 1).ilog2() + 1`.
 
 use crate::error::Error;
@@ -12,24 +13,27 @@ use crate::error::Error;
 ///
 /// The full matrix width `m` is `m0 + n * k_gadget` where
 /// `k_gadget = ⌈log₂ Q⌉` is the number of bits needed to represent
-/// an element of `Z/QZ`.
+/// an element of `Z/QZ`.  `sigma_g` is the Gaussian width used by the
+/// Klein preimage sampler in [`crate::lhs::sign`] to draw a short
+/// preimage of each per-piece target.
 ///
 /// # Examples
 ///
 /// ```
 /// use rlnc_cat_rs::lhs::LhsParams;
 ///
-/// let p = LhsParams::<97>::new(2, 2, 3, 10_000).ok();
+/// let p = LhsParams::<97>::new(2, 2, 3, 10_000_000, 3.0).ok();
 /// assert_eq!(p.as_ref().map(LhsParams::n), Some(2));
 /// assert_eq!(p.as_ref().map(LhsParams::m), Some(2 + 2 * 7));
 /// ```
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 #[must_use]
 pub struct LhsParams<const Q: u32> {
     n: usize,
     m0: usize,
     k_pieces: usize,
     sig_norm_bound_sq: u128,
+    sigma_g: f64,
 }
 
 impl<const Q: u32> LhsParams<Q> {
@@ -38,19 +42,22 @@ impl<const Q: u32> LhsParams<Q> {
     /// # Errors
     ///
     /// - [`Error::DimensionMismatch`] if any of `n`, `m0`, `k_pieces`
-    ///   is zero, or if `Q < 2`.
+    ///   is zero, if `Q < 2`, or if `sigma_g` is not a finite positive
+    ///   number.
     pub fn new(
         n: usize,
         m0: usize,
         k_pieces: usize,
         sig_norm_bound_sq: u128,
+        sigma_g: f64,
     ) -> Result<Self, Error> {
-        if Q >= 2 && n > 0 && m0 > 0 && k_pieces > 0 {
+        if Q >= 2 && n > 0 && m0 > 0 && k_pieces > 0 && sigma_g.is_finite() && sigma_g > 0.0 {
             Ok(Self {
                 n,
                 m0,
                 k_pieces,
                 sig_norm_bound_sq,
+                sigma_g,
             })
         } else {
             Err(Error::DimensionMismatch {
@@ -83,6 +90,17 @@ impl<const Q: u32> LhsParams<Q> {
     #[must_use]
     pub fn sig_norm_bound_sq(&self) -> u128 {
         self.sig_norm_bound_sq
+    }
+
+    /// Gaussian width `σ_g` for the Klein preimage sampler.  Drives
+    /// the statistical closeness of signatures to a canonical discrete
+    /// Gaussian (BFKW09).  Must exceed the maximum Gram-Schmidt norm of
+    /// the gadget-kernel basis times the smoothing factor for provable
+    /// distribution bounds; in practice `σ_g ≥ 3` is comfortable for
+    /// `Q ≤ 2^{16}`.
+    #[must_use]
+    pub fn sigma_g(&self) -> f64 {
+        self.sigma_g
     }
 
     /// Gadget width per ambient coordinate: the number of bits needed
@@ -122,29 +140,38 @@ mod tests {
 
     #[test]
     fn m_combines_primary_and_gadget_blocks() {
-        let p = LhsParams::<97>::new(2, 4, 3, 10_000).ok();
+        let p = LhsParams::<97>::new(2, 4, 3, 10_000, 3.0).ok();
         assert_eq!(p.as_ref().map(LhsParams::m), Some(4 + 2 * 7));
         assert_eq!(p.as_ref().map(LhsParams::gadget_width), Some(14));
     }
 
     #[test]
     fn rejects_zero_dimensions() {
-        assert!(LhsParams::<97>::new(0, 1, 1, 1).is_err());
-        assert!(LhsParams::<97>::new(1, 0, 1, 1).is_err());
-        assert!(LhsParams::<97>::new(1, 1, 0, 1).is_err());
+        assert!(LhsParams::<97>::new(0, 1, 1, 1, 3.0).is_err());
+        assert!(LhsParams::<97>::new(1, 0, 1, 1, 3.0).is_err());
+        assert!(LhsParams::<97>::new(1, 1, 0, 1, 3.0).is_err());
     }
 
     #[test]
     fn rejects_trivial_modulus() {
-        assert!(LhsParams::<1>::new(1, 1, 1, 1).is_err());
+        assert!(LhsParams::<1>::new(1, 1, 1, 1, 3.0).is_err());
+    }
+
+    #[test]
+    fn rejects_nonpositive_sigma_g() {
+        assert!(LhsParams::<97>::new(1, 1, 1, 1, 0.0).is_err());
+        assert!(LhsParams::<97>::new(1, 1, 1, 1, -1.0).is_err());
+        assert!(LhsParams::<97>::new(1, 1, 1, 1, f64::NAN).is_err());
+        assert!(LhsParams::<97>::new(1, 1, 1, 1, f64::INFINITY).is_err());
     }
 
     #[test]
     fn accessors_return_stored_values() {
-        let p = LhsParams::<97>::new(5, 7, 11, 9_999).ok();
+        let p = LhsParams::<97>::new(5, 7, 11, 9_999, 4.5).ok();
         assert_eq!(p.as_ref().map(LhsParams::n), Some(5));
         assert_eq!(p.as_ref().map(LhsParams::m0), Some(7));
         assert_eq!(p.as_ref().map(LhsParams::k_pieces), Some(11));
         assert_eq!(p.as_ref().map(LhsParams::sig_norm_bound_sq), Some(9_999));
+        assert_eq!(p.as_ref().map(LhsParams::sigma_g), Some(4.5));
     }
 }

@@ -99,7 +99,7 @@ mod tests {
     }
 
     fn unreachable_params<const Q: u32>() -> LhsParams<Q> {
-        LhsParams::<Q>::new(1, 1, 1, 1)
+        LhsParams::<Q>::new(1, 1, 1, 1, 1.0)
             .ok()
             .unwrap_or_else(unreachable_params)
     }
@@ -117,14 +117,14 @@ mod tests {
 
     #[test]
     fn fresh_signature_verifies_against_its_target() {
-        let params = LhsParams::<97>::new(2, 2, 3, 10_000)
+        let params = LhsParams::<97>::new(2, 2, 3, 10_000_000, 3.0)
             .ok()
             .unwrap_or_else(unreachable_params);
         let keys = keygen(params, &counter_rng()).ok();
         let ok = keys.is_some_and(|(pk, sk)| {
             (0..pk.params().k_pieces()).all(|i| {
                 let target = fresh_target::<97>(i);
-                sign(&pk, &sk, &target)
+                sign(&pk, &sk, &target, &counter_rng())
                     .ok()
                     .is_some_and(|sig| verify(&pk, &sig, &target).is_ok())
             })
@@ -134,7 +134,7 @@ mod tests {
 
     #[test]
     fn combined_signature_verifies_against_combined_target() {
-        let params = LhsParams::<97>::new(2, 2, 3, 10_000)
+        let params = LhsParams::<97>::new(2, 2, 3, 10_000_000, 3.0)
             .ok()
             .unwrap_or_else(unreachable_params);
         let keys = keygen(params, &counter_rng()).ok();
@@ -143,7 +143,7 @@ mod tests {
                 (0..pk.params().k_pieces()).map(fresh_target::<97>).collect();
             let sigs: Option<Vec<Signature>> = targets
                 .iter()
-                .map(|t| sign(&pk, &sk, t).ok())
+                .map(|t| sign(&pk, &sk, t, &counter_rng()).ok())
                 .collect();
             sigs.is_some_and(|sigs| {
                 let coeffs = vec![Zq::<97>::new(2), Zq::<97>::new(3), Zq::<97>::new(1)];
@@ -161,13 +161,13 @@ mod tests {
 
     #[test]
     fn wrong_target_is_rejected() {
-        let params = LhsParams::<97>::new(2, 2, 1, 10_000)
+        let params = LhsParams::<97>::new(2, 2, 1, 10_000_000, 3.0)
             .ok()
             .unwrap_or_else(unreachable_params);
         let keys = keygen(params, &counter_rng()).ok();
         let target = fresh_target::<97>(0);
         let rejected = keys.is_some_and(|(pk, sk)| {
-            sign(&pk, &sk, &target).ok().is_some_and(|sig| {
+            sign(&pk, &sk, &target, &counter_rng()).ok().is_some_and(|sig| {
                 let wrong = ZqVec::<97>::new(vec![Zq::new(1), Zq::new(1)]);
                 verify(&pk, &sig, &wrong).is_err()
             })
@@ -177,13 +177,13 @@ mod tests {
 
     #[test]
     fn tampered_signature_is_rejected() {
-        let params = LhsParams::<97>::new(2, 2, 1, 10_000)
+        let params = LhsParams::<97>::new(2, 2, 1, 10_000_000, 3.0)
             .ok()
             .unwrap_or_else(unreachable_params);
         let keys = keygen(params, &counter_rng()).ok();
         let target = fresh_target::<97>(0);
         let rejected = keys.is_some_and(|(pk, sk)| {
-            sign(&pk, &sk, &target).ok().is_some_and(|sig| {
+            sign(&pk, &sk, &target, &counter_rng()).ok().is_some_and(|sig| {
                 // Add 1 to entry 0: norm grows slightly, algebra breaks.
                 let tampered_entries: Vec<i64> = sig
                     .sigma()
@@ -203,20 +203,23 @@ mod tests {
     fn algebraically_valid_but_norm_excessive_is_rejected() {
         // σ' = σ + 2Q·e_0 preserves A·σ' ≡ A·σ (mod Q) but bloats norm
         // beyond the bound.  Isolates the norm check as the reason for
-        // rejection (algebra still passes).
-        let params = LhsParams::<97>::new(2, 2, 1, 10_000)
+        // rejection (algebra still passes).  Tight bound here isolates
+        // the norm failure: a very small β² fails even the fresh σ's
+        // plain-bit check, so we use a moderate β² and inflate the
+        // tampered entry by a multiple of Q large enough to exceed it.
+        let params = LhsParams::<97>::new(2, 2, 1, 10_000_000, 3.0)
             .ok()
             .unwrap_or_else(unreachable_params);
         let keys = keygen(params, &counter_rng()).ok();
         let target = fresh_target::<97>(0);
         let rejected = keys.is_some_and(|(pk, sk)| {
-            sign(&pk, &sk, &target).ok().is_some_and(|sig| {
+            sign(&pk, &sk, &target, &counter_rng()).ok().is_some_and(|sig| {
                 let bloated_entries: Vec<i64> = sig
                     .sigma()
                     .entries()
                     .iter()
                     .enumerate()
-                    .map(|(i, &x)| if i == 0 { x + 2 * 97 } else { x })
+                    .map(|(i, &x)| if i == 0 { x + 97 * 10_000 } else { x })
                     .collect();
                 let bloated = Signature::new(ZVec::new(bloated_entries));
                 verify(&pk, &bloated, &target).is_err()
@@ -227,7 +230,7 @@ mod tests {
 
     #[test]
     fn short_signature_is_rejected() {
-        let params = LhsParams::<97>::new(2, 2, 1, 10_000)
+        let params = LhsParams::<97>::new(2, 2, 1, 10_000_000, 3.0)
             .ok()
             .unwrap_or_else(unreachable_params);
         let keys = keygen(params, &counter_rng()).ok();
@@ -241,13 +244,13 @@ mod tests {
 
     #[test]
     fn wrong_target_length_is_rejected() {
-        let params = LhsParams::<97>::new(2, 2, 1, 10_000)
+        let params = LhsParams::<97>::new(2, 2, 1, 10_000_000, 3.0)
             .ok()
             .unwrap_or_else(unreachable_params);
         let keys = keygen(params, &counter_rng()).ok();
         let target = fresh_target::<97>(0);
         let rejected = keys.is_some_and(|(pk, sk)| {
-            sign(&pk, &sk, &target).ok().is_some_and(|sig| {
+            sign(&pk, &sk, &target, &counter_rng()).ok().is_some_and(|sig| {
                 let wrong = ZqVec::<97>::zeros(5);
                 verify(&pk, &sig, &wrong).is_err()
             })

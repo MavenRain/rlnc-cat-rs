@@ -13,8 +13,8 @@
 //! each generation's commitment to the file it authenticates.
 
 use crate::error::Error;
-use crate::lattice::{ZMatrix, Zq, ZqMatrix, ZqVec};
-use crate::lhs::gadget::gadget_entry;
+use crate::lattice::{PreimageContext, ZMatrix, Zq, ZqMatrix, ZqVec};
+use crate::lhs::gadget::{gadget_entry, gadget_kernel_basis};
 use crate::lhs::params::LhsParams;
 
 /// A public key for the LHS scheme.
@@ -55,31 +55,48 @@ impl<const Q: u32> PublicKey<Q> {
     }
 }
 
-/// The secret key: the trapdoor matrix `R` together with enough of
-/// the parameter set to validate inputs at signing time.
+/// The secret key: the trapdoor matrix `R`, the parameter set, and a
+/// cached preimage context over the single-block gadget kernel
+/// `Λ^⊥_q(g)` used by [`crate::lhs::sign::sign`] to draw a Gaussian
+/// offset on top of the deterministic bit-decomposition preimage.
 #[derive(Clone, Debug)]
 #[must_use]
 pub struct SecretKey<const Q: u32> {
     r: ZMatrix,
     params: LhsParams<Q>,
+    gadget_kernel_ctx: PreimageContext,
 }
 
 impl<const Q: u32> SecretKey<Q> {
     /// Build a secret key from the trapdoor matrix.
     ///
+    /// Also materialises the `k × k` gadget-kernel basis and its
+    /// Gram-Schmidt orthogonalization (cached inside a
+    /// [`PreimageContext`]), so repeated [`sign`][crate::lhs::sign::sign]
+    /// calls can amortise the f64 linear-algebra work across the
+    /// generation's pieces.
+    ///
     /// # Errors
     ///
     /// - [`Error::DimensionMismatch`] if `r`'s shape is not
     ///   `params.m0() × params.gadget_width()`.
+    /// - [`Error::RandomGenerationFailed`] if the gadget-kernel basis
+    ///   derived from `Q` is numerically singular (`Q` is a power of
+    ///   two, for instance); see [`PreimageContext::new`].
     pub fn new(r: ZMatrix, params: LhsParams<Q>) -> Result<Self, Error> {
-        if r.rows() == params.m0() && r.cols() == params.gadget_width() {
-            Ok(Self { r, params })
-        } else {
-            Err(Error::DimensionMismatch {
+        (r.rows() == params.m0() && r.cols() == params.gadget_width())
+            .then_some(())
+            .ok_or(Error::DimensionMismatch {
                 expected: params.m0() * params.gadget_width(),
                 actual: r.rows() * r.cols(),
             })
-        }
+            .and_then(|()| gadget_kernel_basis::<Q>())
+            .and_then(PreimageContext::new)
+            .map(|gadget_kernel_ctx| Self {
+                r,
+                params,
+                gadget_kernel_ctx,
+            })
     }
 
     /// Borrow of the trapdoor matrix.
@@ -90,6 +107,11 @@ impl<const Q: u32> SecretKey<Q> {
     /// The parameter set.
     pub fn params(&self) -> &LhsParams<Q> {
         &self.params
+    }
+
+    /// Borrow of the cached gadget-kernel preimage context.
+    pub fn gadget_kernel_ctx(&self) -> &PreimageContext {
+        &self.gadget_kernel_ctx
     }
 }
 
@@ -199,7 +221,7 @@ fn build_a1<const Q: u32>(
     ZqMatrix::new(n, g_width, data)
 }
 
-/// Horizontally concatenate `A_0` (n × m0) and `A_1` (n × g_width)
+/// Horizontally concatenate `A_0` (n × m0) and `A_1` (n × `g_width`)
 /// into `A` (n × m).
 fn assemble_full_a<const Q: u32>(
     a_0: &ZqMatrix<Q>,
@@ -242,7 +264,7 @@ mod tests {
 
     #[test]
     fn keygen_dimensions_match_params() {
-        let params = LhsParams::<97>::new(2, 2, 3, 10_000)
+        let params = LhsParams::<97>::new(2, 2, 3, 10_000, 3.0)
             .ok()
             .unwrap_or_else(unreachable_params);
         let keys = keygen(params.clone(), &counter_rng()).ok();
@@ -262,11 +284,27 @@ mod tests {
     }
 
     #[test]
+    fn keygen_secret_has_gadget_kernel_context() {
+        // k × k basis cached in the secret key lets `sign` skip the
+        // Gram-Schmidt cost on every invocation.
+        let params = LhsParams::<97>::new(2, 2, 3, 10_000, 3.0)
+            .ok()
+            .unwrap_or_else(unreachable_params);
+        let keys = keygen(params, &counter_rng()).ok();
+        let k = LhsParams::<97>::k_gadget();
+        let shape = keys.map(|(_, sk)| {
+            let ctx = sk.gadget_kernel_ctx();
+            (ctx.rank(), ctx.dim())
+        });
+        assert_eq!(shape, Some((k, k)));
+    }
+
+    #[test]
     fn keygen_trapdoor_identity_holds() {
         // A · [R·w ; w] = G · w  for every w.  Verify with a random
         // bit vector `w` and confirm the left side reduces to G·w
         // in Zq.
-        let params = LhsParams::<97>::new(2, 2, 1, 10_000)
+        let params = LhsParams::<97>::new(2, 2, 1, 10_000, 3.0)
             .ok()
             .unwrap_or_else(unreachable_params);
         let keys = keygen(params.clone(), &counter_rng()).ok();
@@ -298,7 +336,7 @@ mod tests {
 
     #[test]
     fn public_key_construction_rejects_mismatched_shape() {
-        let params = LhsParams::<97>::new(2, 2, 3, 10_000)
+        let params = LhsParams::<97>::new(2, 2, 3, 10_000, 3.0)
             .ok()
             .unwrap_or_else(unreachable_params);
         let a = ZqMatrix::<97>::zeros(1, params.m());
@@ -306,7 +344,7 @@ mod tests {
     }
 
     fn unreachable_params<const Q: u32>() -> LhsParams<Q> {
-        LhsParams::<Q>::new(1, 1, 1, 1)
+        LhsParams::<Q>::new(1, 1, 1, 1, 1.0)
             .ok()
             .unwrap_or_else(unreachable_params)
     }
