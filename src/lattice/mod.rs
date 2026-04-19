@@ -13,9 +13,10 @@
 //! - [`PreimageContext`]: Babai nearest-plane and Klein Gaussian
 //!   preimage sampling over a lattice with a known basis.
 //!
-//! These types are the substrate for the upcoming BF11-style linearly
-//! homomorphic signature scheme that will let a recoding gossip relay
-//! produce authenticated pieces without the source's key.
+//! These types are the substrate for the BFKW09-style linearly
+//! homomorphic signature scheme in [`crate::lhs`], which lets a
+//! recoding gossip relay produce authenticated pieces without the
+//! source's key.
 
 mod gaussian;
 mod matrix;

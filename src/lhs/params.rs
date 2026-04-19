@@ -1,4 +1,4 @@
-//! Scheme parameters for the BF11-style linearly homomorphic signature.
+//! Scheme parameters for the BFKW09-style linearly homomorphic signature.
 //!
 //! [`LhsParams`] packages the dimensional constants, the Gaussian width
 //! `σ_g` used by the Klein preimage sampler, and the verification norm
@@ -8,7 +8,7 @@
 
 use crate::error::Error;
 
-/// Parameters for the BF11-style linearly homomorphic signature
+/// Parameters for the BFKW09-style linearly homomorphic signature
 /// scheme over `Z/QZ`.
 ///
 /// The full matrix width `m` is `m0 + n * k_gadget` where

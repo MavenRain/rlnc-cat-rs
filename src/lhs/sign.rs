@@ -34,7 +34,7 @@ use crate::lhs::gadget::gadget_preimage;
 use crate::lhs::keys::{PublicKey, SecretKey};
 use crate::lhs::params::LhsParams;
 
-/// A BF11-style signature: the integer vector `σ ∈ Z^m` whose
+/// A BFKW09-style signature: the integer vector `σ ∈ Z^m` whose
 /// length equals `params.m() = m0 + n·k_gadget` for a well-formed key.
 ///
 /// Signatures live over `Z`, not `Z/QZ`: the norm bound that the
@@ -468,5 +468,44 @@ mod tests {
     fn signature_norm_reports_sum_of_squares() {
         let sig = Signature::new(ZVec::new(vec![3, -4, 0]));
         assert_eq!(sig.squared_l2_norm(), 9 + 16);
+    }
+
+    #[test]
+    fn signature_empirical_variance_scales_with_sigma_g() {
+        // BFKW09 statistical-closeness check: σ = R·z + w₀ where w₀ is
+        // deterministic and z ~ D_{Λ⊥(G), σ_g}, so Var(σ[0]) across RNG
+        // seeds scales with σ_g².  Doubling σ_g should at minimum
+        // double the empirical variance (expected: ≈ 4× the variance).
+        let collect_entry0 = |sigma_g: f64| -> Option<Vec<f64>> {
+            LhsParams::<97>::new(2, 2, 1, 100_000_000, sigma_g)
+                .ok()
+                .and_then(|params| keygen(params, &counter_rng()).ok())
+                .and_then(|(pk, sk)| {
+                    let target = fresh_target::<97>(0);
+                    (0..300)
+                        .map(|seed| {
+                            sign(&pk, &sk, &target, &blake3_rng(seed)).ok().map(|s| {
+                                #[allow(clippy::cast_precision_loss)]
+                                let v = s.sigma().entries()[0] as f64;
+                                v
+                            })
+                        })
+                        .collect::<Option<Vec<f64>>>()
+                })
+        };
+        let sample_variance = |data: &[f64]| {
+            #[allow(clippy::cast_precision_loss)]
+            let n = data.len() as f64;
+            let mean = data.iter().sum::<f64>() / n;
+            data.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / n
+        };
+        let ok = collect_entry0(3.0)
+            .zip(collect_entry0(6.0))
+            .is_some_and(|(a, b)| {
+                let va = sample_variance(&a);
+                let vb = sample_variance(&b);
+                vb > 2.0 * va
+            });
+        assert!(ok);
     }
 }

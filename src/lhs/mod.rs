@@ -1,11 +1,11 @@
-//! BF11-style linearly homomorphic signatures over `Z/QZ`.
+//! BFKW09-style linearly homomorphic signatures over `Z/QZ`.
 //!
-//! This module implements a Boneh-Freeman 2011 / BFKW09-flavoured
-//! lattice-based signature scheme whose signatures compose under
-//! `Zq`-linear combinations.  A recoding gossip relay can therefore
-//! emit fresh authenticated pieces *without the secret key*, which is
-//! the property RLNC needs from any authenticator that tolerates
-//! on-the-fly linear mixing.
+//! This module implements a Boneh-Freeman-Katz-Waters 2009 / Gentry-
+//! Peikert lattice-based signature scheme whose signatures compose
+//! under `Zq`-linear combinations.  A recoding gossip relay can
+//! therefore emit fresh authenticated pieces *without the secret key*,
+//! which is the property RLNC needs from any authenticator that
+//! tolerates on-the-fly linear mixing.
 //!
 //! # Construction
 //!
@@ -15,10 +15,13 @@
 //! ternary matrix.  A signature on `h ∈ Zq^n` is
 //!
 //! ```text
-//! σ = [R·w ; w]    where w = G⁻¹(h) ∈ {0,1}^{n·k_gadget}.
+//! σ = [R·w ; w]    where w is a short Klein/Gaussian preimage of h.
 //! ```
 //!
-//! Correctness follows from `A · σ = A_0·R·w + (G - A_0·R)·w = G·w = h`.
+//! `w` is drawn from the discrete Gaussian `D_{w_0 + Λ^⊥_q(G), σ_g}`,
+//! where `w_0 = bits(h)` is the deterministic gadget preimage and the
+//! Gaussian offset lives in the per-block gadget kernel.  Correctness
+//! follows from `A · σ = A_0·R·w + (G - A_0·R)·w = G·w ≡ h (mod Q)`.
 //! Linear homomorphism: `c·σ_1 + σ_2` signs `c·h_1 + h_2` (combined
 //! over `Z` with balanced-signed lifts of the `Zq` coefficients).
 //!
@@ -32,13 +35,13 @@
 //!
 //! # Status
 //!
-//! This is a correctness-oriented v0.1.  It uses `f64` nowhere, is not
-//! constant-time, and sets conservative-but-small parameters suitable
-//! for unit tests and gossip-layer integration.  The discrete Gaussian
-//! sampling over short bases (required for BFKW09 proper) lives in
-//! [`crate::lattice`]; this module uses the deterministic gadget
-//! preimage which is sound but not statistically close to the claimed
-//! distribution.
+//! This is a correctness-oriented v0.2 that upgrades the deterministic
+//! gadget preimage to Klein/Gaussian sampling over the kernel lattice
+//! `Λ^⊥_q(G)`, achieving BFKW09 statistical closeness to the ideal
+//! discrete Gaussian.  The Klein sampler uses `f64` Gram-Schmidt and is
+//! therefore not constant-time; this module is suitable for unit tests
+//! and gossip-layer integration, not production side-channel-resistant
+//! deployments.
 
 mod authenticator;
 mod gadget;

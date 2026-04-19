@@ -1,7 +1,7 @@
 //! Matrices over `Z/QZ` in row-major storage.
 //!
 //! [`ZqMatrix`] is the matrix counterpart to [`ZqVec`].  Only the
-//! operations needed by the BF11 homomorphic-signature scheme live
+//! operations needed by the BFKW09 homomorphic-signature scheme live
 //! here: construction, entry access, matrix-vector multiplication,
 //! and uniform sampling.  Matrix-matrix multiplication and
 //! factorizations are deliberately out of scope for v0.1.

@@ -1,6 +1,6 @@
 //! Linearly homomorphic signature [`Authenticator`] for RLNC gossip.
 //!
-//! Wires the BF11-style scheme from [`crate::lhs`] into the gossip
+//! Wires the BFKW09-style scheme from [`crate::lhs`] into the gossip
 //! layer's [`Authenticator`] interface.  The authenticator publishes
 //!
 //! - the public key `pk = A`,

@@ -325,7 +325,7 @@ mod tests {
     fn three_node_pipeline_lhs_auth() {
         // Node 0 (source) → Node 1 (relay_fanout peer_count=1) → Node 2
         // (receive), with every hop authenticating pieces through the
-        // BF11 linearly homomorphic signature scheme.  The relay holds
+        // BFKW09 linearly homomorphic signature scheme.  The relay holds
         // only the public artefacts (pk, σ_originals) and still tags
         // recoded pieces, exercising the homomorphic property across
         // the full wire transport.
