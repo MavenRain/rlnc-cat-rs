@@ -73,6 +73,7 @@ impl<const Q: u32> ZqMatrix<Q> {
 
     /// The entry at `(row, col)`, if in bounds.
     #[must_use]
+    #[inline]
     pub fn entry(&self, row: usize, col: usize) -> Option<Zq<Q>> {
         (col < self.cols)
             .then(|| self.data.get(row * self.cols + col).copied())
@@ -86,13 +87,15 @@ impl<const Q: u32> ZqMatrix<Q> {
     /// - [`Error::DimensionMismatch`] if `v.len() != self.cols`.
     pub fn mul_vec(&self, v: &ZqVec<Q>) -> Result<ZqVec<Q>, Error> {
         if v.len() == self.cols {
-            let entries = (0..self.rows)
-                .map(|i| {
-                    (0..self.cols).fold(Zq::<Q>::zero(), |acc, j| {
-                        let a = self.data.get(i * self.cols + j).copied().unwrap_or(Zq::zero());
-                        let b = v.entries().get(j).copied().unwrap_or(Zq::zero());
-                        acc + a * b
-                    })
+            let v_entries = v.entries();
+            let entries: Vec<Zq<Q>> = self
+                .data
+                .chunks(self.cols)
+                .map(|row_slice| {
+                    row_slice
+                        .iter()
+                        .zip(v_entries.iter())
+                        .fold(Zq::<Q>::zero(), |acc, (&a, &b)| acc + a * b)
                 })
                 .collect();
             Ok(ZqVec::new(entries))

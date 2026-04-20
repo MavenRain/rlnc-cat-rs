@@ -129,13 +129,16 @@ impl ZVec {
             let dim = vecs.first().map_or(0, Self::len);
             vecs.iter().find(|v| v.len() != dim).map_or_else(
                 || {
-                    let entries = (0..dim)
-                        .map(|i| {
-                            scalars.iter().zip(vecs.iter()).fold(0i64, |acc, (&s, v)| {
-                                acc + s * v.entries.get(i).copied().unwrap_or(0)
-                            })
-                        })
-                        .collect();
+                    let init: Vec<i64> = vec![0i64; dim];
+                    let entries = scalars.iter().zip(vecs.iter()).fold(
+                        init,
+                        |acc, (&s, v)| {
+                            acc.into_iter()
+                                .zip(v.entries.iter())
+                                .map(|(a, &b)| a + s * b)
+                                .collect()
+                        },
+                    );
                     Ok(Self { entries })
                 },
                 |bad| {
@@ -160,8 +163,8 @@ impl ZVec {
         self.entries
             .iter()
             .map(|&x| {
-                let s = i128::from(x);
-                u128::try_from(s * s).unwrap_or(0)
+                let a = u128::from(x.unsigned_abs());
+                a * a
             })
             .sum()
     }
@@ -263,13 +266,15 @@ impl ZMatrix {
     /// - [`Error::DimensionMismatch`] if `v.len() != self.cols`.
     pub fn mul_vec(&self, v: &ZVec) -> Result<ZVec, Error> {
         if v.len() == self.cols {
-            let entries = (0..self.rows)
-                .map(|i| {
-                    (0..self.cols).fold(0i64, |acc, j| {
-                        let a = self.data.get(i * self.cols + j).copied().unwrap_or(0);
-                        let b = v.entries().get(j).copied().unwrap_or(0);
-                        acc + a * b
-                    })
+            let v_entries = v.entries();
+            let entries: Vec<i64> = self
+                .data
+                .chunks(self.cols)
+                .map(|row_slice| {
+                    row_slice
+                        .iter()
+                        .zip(v_entries.iter())
+                        .fold(0i64, |acc, (&a, &b)| acc + a * b)
                 })
                 .collect();
             Ok(ZVec::new(entries))

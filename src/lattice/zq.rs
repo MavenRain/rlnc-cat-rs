@@ -32,29 +32,34 @@ pub struct Zq<const Q: u32>(u32);
 
 impl<const Q: u32> Zq<Q> {
     /// Create an element by reducing `val` mod `Q`.
+    #[inline]
     pub const fn new(val: u32) -> Self {
         Self(val % Q)
     }
 
     /// The additive identity.
+    #[inline]
     pub const fn zero() -> Self {
         Self(0)
     }
 
     /// The multiplicative identity.  Returns zero when `Q == 1`, since
     /// `Z/1Z` is the zero ring.
+    #[inline]
     pub const fn one() -> Self {
         Self(1 % Q)
     }
 
     /// The canonical representative in `[0, Q)`.
     #[must_use]
+    #[inline]
     pub const fn value(self) -> u32 {
         self.0
     }
 
     /// Whether this element is the additive identity.
     #[must_use]
+    #[inline]
     pub const fn is_zero(self) -> bool {
         self.0 == 0
     }
@@ -65,6 +70,7 @@ impl<const Q: u32> Zq<Q> {
     /// `v - Q` so the result is the lift closer to zero.  Used for L2
     /// norm computations in lattice verification.
     #[must_use]
+    #[inline]
     pub fn signed_repr(self) -> i64 {
         let v = i64::from(self.0);
         let q = i64::from(Q);
@@ -124,6 +130,7 @@ impl<const Q: u32> Zq<Q> {
 }
 
 impl<const Q: u32> From<u32> for Zq<Q> {
+    #[inline]
     fn from(val: u32) -> Self {
         Self::new(val)
     }
@@ -131,6 +138,7 @@ impl<const Q: u32> From<u32> for Zq<Q> {
 
 impl<const Q: u32> Add for Zq<Q> {
     type Output = Self;
+    #[inline]
     fn add(self, rhs: Self) -> Self {
         let r = (u64::from(self.0) + u64::from(rhs.0)) % u64::from(Q);
         Self(u32::try_from(r).unwrap_or(0))
@@ -139,6 +147,7 @@ impl<const Q: u32> Add for Zq<Q> {
 
 impl<const Q: u32> Sub for Zq<Q> {
     type Output = Self;
+    #[inline]
     fn sub(self, rhs: Self) -> Self {
         let q = u64::from(Q);
         let r = (u64::from(self.0) + q - u64::from(rhs.0)) % q;
@@ -148,6 +157,7 @@ impl<const Q: u32> Sub for Zq<Q> {
 
 impl<const Q: u32> Mul for Zq<Q> {
     type Output = Self;
+    #[inline]
     fn mul(self, rhs: Self) -> Self {
         let r = (u64::from(self.0) * u64::from(rhs.0)) % u64::from(Q);
         Self(u32::try_from(r).unwrap_or(0))
@@ -156,6 +166,7 @@ impl<const Q: u32> Mul for Zq<Q> {
 
 impl<const Q: u32> Neg for Zq<Q> {
     type Output = Self;
+    #[inline]
     fn neg(self) -> Self {
         if self.0 == 0 { self } else { Self(Q - self.0) }
     }

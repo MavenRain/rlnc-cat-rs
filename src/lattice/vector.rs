@@ -77,16 +77,16 @@ impl<const Q: u32> ZqVec<Q> {
             let dim = vecs.first().map_or(0, Self::len);
             vecs.iter().find(|v| v.len() != dim).map_or_else(
                 || {
-                    let entries = (0..dim)
-                        .map(|i| {
-                            scalars.iter().zip(vecs.iter()).fold(
-                                Zq::<Q>::zero(),
-                                |acc, (&s, v)| {
-                                    acc + s * v.entries.get(i).copied().unwrap_or(Zq::zero())
-                                },
-                            )
-                        })
-                        .collect();
+                    let init: Vec<Zq<Q>> = vec![Zq::<Q>::zero(); dim];
+                    let entries = scalars.iter().zip(vecs.iter()).fold(
+                        init,
+                        |acc, (&s, v)| {
+                            acc.into_iter()
+                                .zip(v.entries.iter())
+                                .map(|(a, &b)| a + s * b)
+                                .collect()
+                        },
+                    );
                     Ok(Self { entries })
                 },
                 |bad| {
@@ -144,8 +144,8 @@ impl<const Q: u32> ZqVec<Q> {
         self.entries
             .iter()
             .map(|z| {
-                let s = i128::from(z.signed_repr());
-                u128::try_from(s * s).unwrap_or(0)
+                let a = u128::from(z.signed_repr().unsigned_abs());
+                a * a
             })
             .sum()
     }

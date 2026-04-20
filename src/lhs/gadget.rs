@@ -70,6 +70,7 @@ pub(crate) fn gadget_apply<const Q: u32>(w: &[i64], n: usize) -> ZqVec<Q> {
 
 /// The `(i, j)` entry of the gadget matrix `G = I_n ⊗ [1, 2, …, 2^{k-1}]`.
 /// Returns `0` when the index falls outside the `i`-th block.
+#[inline]
 pub fn gadget_entry<const Q: u32>(i: usize, j: usize) -> Zq<Q> {
     let k = LhsParams::<Q>::k_gadget();
     if j / k == i {
@@ -81,6 +82,7 @@ pub fn gadget_entry<const Q: u32>(i: usize, j: usize) -> Zq<Q> {
     }
 }
 
+#[inline]
 fn reduce_u64<const Q: u32>(v: u64) -> Zq<Q> {
     let r = u32::try_from(v % u64::from(Q)).unwrap_or(0);
     Zq::<Q>::new(r)
